@@ -14,7 +14,7 @@ DEFAULT_MODEL_PATH = (
 )
 DEFAULT_PREDICTION_OUTPUT = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs"
-    r"\unet_predictions\sample_000000_overlay.ppm"
+    r"\unet_predictions\sample_000000_overlay.png"
 )
 
 

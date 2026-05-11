@@ -56,7 +56,7 @@ Useful parameters:
 The prediction overlay is saved to:
 
 ```text
-C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_predictions\sample_000000_overlay.ppm
+C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_predictions\sample_000000_overlay.png
 ```
 
 Overlay colors:

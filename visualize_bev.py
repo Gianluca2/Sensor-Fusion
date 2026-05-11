@@ -6,7 +6,7 @@ import tkinter as tk
 
 import numpy as np
 
-from bev_projection import write_ppm
+from bev_projection import write_image, write_ppm
 
 
 DEFAULT_BEV = (
@@ -18,7 +18,7 @@ DEFAULT_MASKED_DIR = (
 )
 DEFAULT_COMPARISON = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs"
-    r"\bev\bev_mask_comparison.ppm"
+    r"\bev\bev_mask_comparison.png"
 )
 
 
@@ -80,7 +80,7 @@ def add_separator(left: np.ndarray, right: np.ndarray) -> np.ndarray:
 
 def save_comparison(original_rgb, masked_rgb, comparison_path: Path):
     comparison = add_separator(original_rgb, masked_rgb)
-    write_ppm(comparison_path, comparison)
+    write_image(comparison_path, comparison)
     return comparison
 
 

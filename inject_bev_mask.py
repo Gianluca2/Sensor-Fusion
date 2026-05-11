@@ -5,7 +5,7 @@ from datetime import datetime
 
 import numpy as np
 
-from bev_projection import write_ppm
+from bev_projection import write_image
 
 
 DEFAULT_INPUT = (
@@ -181,13 +181,13 @@ def main():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     stem = f"{input_path.stem}_masked_{timestamp}"
     npz_path = output_dir / f"{stem}.npz"
-    ppm_path = output_dir / f"{stem}.ppm"
+    image_path = output_dir / f"{stem}.png"
     manifest_path = output_dir / f"{stem}_manifest.json"
 
     fault_metadata = {
         "source_bev": str(input_path),
         "masked_bev": str(npz_path),
-        "masked_preview": str(ppm_path),
+        "masked_preview": str(image_path),
         "fault_type": "bev_black_mask",
         "mask": {
             **mask_description,
@@ -200,13 +200,13 @@ def main():
     }
 
     save_masked_npz(npz_path, masked_arrays, fault_metadata)
-    write_ppm(ppm_path, masked_arrays["rgb_preview"].astype(np.uint8))
+    write_image(image_path, masked_arrays["rgb_preview"].astype(np.uint8))
 
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(fault_metadata, indent=2), encoding="utf-8")
 
     print(f"Wrote masked BEV arrays: {npz_path}")
-    print(f"Wrote masked BEV preview: {ppm_path}")
+    print(f"Wrote masked BEV preview: {image_path}")
     print(f"Wrote fault manifest: {manifest_path}")
     print(
         "Masked grid cells: "

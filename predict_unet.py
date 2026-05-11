@@ -4,7 +4,7 @@ import argparse
 import numpy as np
 import torch
 
-from bev_projection import write_ppm
+from bev_projection import write_image
 from unet_model import SmallUNet
 
 
@@ -18,7 +18,7 @@ DEFAULT_SAMPLE = (
 )
 DEFAULT_OUTPUT = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_predictions"
-    r"\sample_000000_overlay.ppm"
+    r"\sample_000000_overlay.png"
 )
 
 
@@ -124,7 +124,7 @@ def main():
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    write_ppm(output_path, overlay)
+    write_image(output_path, overlay)
 
     print(f"Sample: {args.sample}")
     print(f"Model: {args.model_path}")

@@ -153,6 +153,24 @@ def write_ppm(path: Path, rgb: np.ndarray):
         f.write(rgb.tobytes())
 
 
+def write_image(path: Path, rgb: np.ndarray):
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if path.suffix.lower() == ".ppm":
+        write_ppm(path, rgb)
+        return
+
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise ImportError(
+            "Saving PNG/JPG images requires Pillow. Install it with: "
+            "python -m pip install pillow"
+        ) from exc
+
+    Image.fromarray(rgb.astype(np.uint8), mode="RGB").save(path)
+
+
 def save_bev(output_path: Path, bev_layers, rgb: np.ndarray, metadata: dict):
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -203,7 +221,7 @@ def main():
     output_dir = Path(args.output_dir)
     stem = f"bev_match_{args.match_row:06d}"
     npz_path = output_dir / f"{stem}.npz"
-    ppm_path = output_dir / f"{stem}.ppm"
+    image_path = output_dir / f"{stem}.png"
 
     metadata = {
         "match_row": args.match_row,
@@ -225,10 +243,10 @@ def main():
     }
 
     save_bev(npz_path, bev_layers, rgb, metadata)
-    write_ppm(ppm_path, rgb)
+    write_image(image_path, rgb)
 
     print(f"Wrote BEV arrays: {npz_path}")
-    print(f"Wrote BEV preview: {ppm_path}")
+    print(f"Wrote BEV preview: {image_path}")
     print(f"Grid shape: {rgb.shape[0]} rows x {rgb.shape[1]} cols")
     print(f"LiDAR occupied cells: {np.count_nonzero(bev_layers['lidar_density'])}")
     print(f"Radar occupied cells: {np.count_nonzero(bev_layers['radar_density'])}")
