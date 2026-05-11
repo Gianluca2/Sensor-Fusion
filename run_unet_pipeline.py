@@ -31,6 +31,7 @@ def main():
     parser.add_argument("--num-samples", type=int, default=200)
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--min-mask-occupied-cells", type=int, default=50)
     parser.add_argument("--dataset-dir", default=DEFAULT_DATASET_DIR)
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--prediction-output", default=DEFAULT_PREDICTION_OUTPUT)
@@ -63,6 +64,8 @@ def main():
             str(args.num_samples),
             "--output-dir",
             args.dataset_dir,
+            "--min-mask-occupied-cells",
+            str(args.min_mask_occupied_cells),
         ],
     )
 

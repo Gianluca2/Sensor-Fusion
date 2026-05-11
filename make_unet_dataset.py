@@ -21,6 +21,7 @@ DEFAULT_LAYERS = [
     "radar_range_min",
     "radar_rcs_max",
 ]
+OCCUPANCY_LAYER_INDICES = [0, 1, 2]
 
 
 def load_clean_bev(path: Path, layers):
@@ -45,15 +46,39 @@ def random_rect(height, width, min_h, max_h, min_w, max_w):
     return row, row + rect_h, col, col + rect_w
 
 
-def make_sample(clean: np.ndarray, sample_index: int, args):
+def build_occupancy_map(clean: np.ndarray, threshold: float) -> np.ndarray:
+    occupancy_layers = clean[OCCUPANCY_LAYER_INDICES]
+    return np.any(occupancy_layers > threshold, axis=0)
+
+
+def choose_nonempty_rect(occupancy: np.ndarray, args):
+    height, width = occupancy.shape
+
+    for _ in range(args.max_mask_attempts):
+        row_start, row_end, col_start, col_end = random_rect(
+            height,
+            width,
+            min_h=args.min_mask_height,
+            max_h=args.max_mask_height,
+            min_w=args.min_mask_width,
+            max_w=args.max_mask_width,
+        )
+        occupied_cells = int(np.count_nonzero(occupancy[row_start:row_end, col_start:col_end]))
+
+        if occupied_cells >= args.min_mask_occupied_cells:
+            return row_start, row_end, col_start, col_end, occupied_cells
+
+    raise RuntimeError(
+        "Could not find a mask region with enough occupied BEV cells. "
+        "Try lowering --min-mask-occupied-cells or increasing --max-mask-attempts."
+    )
+
+
+def make_sample(clean: np.ndarray, occupancy: np.ndarray, sample_index: int, args):
     _, height, width = clean.shape
-    row_start, row_end, col_start, col_end = random_rect(
-        height,
-        width,
-        min_h=args.min_mask_height,
-        max_h=args.max_mask_height,
-        min_w=args.min_mask_width,
-        max_w=args.max_mask_width,
+    row_start, row_end, col_start, col_end, occupied_cells = choose_nonempty_rect(
+        occupancy,
+        args,
     )
 
     faulty = np.array(clean, copy=True)
@@ -69,6 +94,7 @@ def make_sample(clean: np.ndarray, sample_index: int, args):
             "row_end": row_end,
             "col_start": col_start,
             "col_end": col_end,
+            "occupied_cells_before_masking": occupied_cells,
         },
     }
 
@@ -87,6 +113,24 @@ def main():
     parser.add_argument("--max-mask-height", type=int, default=90)
     parser.add_argument("--min-mask-width", type=int, default=25)
     parser.add_argument("--max-mask-width", type=int, default=90)
+    parser.add_argument(
+        "--min-mask-occupied-cells",
+        type=int,
+        default=50,
+        help="Minimum occupied BEV cells required inside a sampled mask rectangle.",
+    )
+    parser.add_argument(
+        "--occupancy-threshold",
+        type=float,
+        default=0.0,
+        help="A BEV cell is occupied if any occupancy layer is greater than this value.",
+    )
+    parser.add_argument(
+        "--max-mask-attempts",
+        type=int,
+        default=500,
+        help="Maximum random rectangles to try per training sample.",
+    )
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -96,17 +140,20 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     clean, source_metadata = load_clean_bev(Path(args.bev), DEFAULT_LAYERS)
+    occupancy = build_occupancy_map(clean, args.occupancy_threshold)
 
     manifest = {
         "source_bev": str(Path(args.bev)),
         "num_samples": args.num_samples,
         "layers": DEFAULT_LAYERS,
+        "occupancy_layers": [DEFAULT_LAYERS[index] for index in OCCUPANCY_LAYER_INDICES],
+        "min_mask_occupied_cells": args.min_mask_occupied_cells,
         "source_metadata": source_metadata,
         "samples": [],
     }
 
     for index in range(args.num_samples):
-        faulty, target, sample_metadata = make_sample(clean, index, args)
+        faulty, target, sample_metadata = make_sample(clean, occupancy, index, args)
         sample_path = output_dir / f"sample_{index:06d}.npz"
 
         np.savez_compressed(
@@ -126,6 +173,8 @@ def main():
     print(f"Wrote {args.num_samples} samples to {output_dir}")
     print(f"Wrote manifest: {manifest_path}")
     print(f"Input shape per sample: {clean.shape}")
+    print(f"Occupied BEV cells available: {np.count_nonzero(occupancy)}")
+    print(f"Minimum occupied cells per mask: {args.min_mask_occupied_cells}")
 
 
 if __name__ == "__main__":

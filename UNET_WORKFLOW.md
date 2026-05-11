@@ -49,7 +49,12 @@ Useful parameters:
 --num-samples 200
 --epochs 15
 --batch-size 4
+--min-mask-occupied-cells 50
 ```
+
+`--min-mask-occupied-cells` rejects random mask locations that cover mostly empty
+space. This keeps training examples focused on regions where the clean BEV had
+LiDAR/radar content before masking.
 
 ## Output
 
