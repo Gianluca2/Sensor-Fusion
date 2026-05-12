@@ -203,7 +203,7 @@ def main():
     parser.add_argument("--dataset-dir", default=DEFAULT_DATASET_DIR)
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--metrics-path", default=DEFAULT_METRICS_PATH)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--base-channels", type=int, default=16)

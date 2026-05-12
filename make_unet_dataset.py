@@ -39,7 +39,7 @@ def load_clean_bev(path: Path, layers):
 
 
 def random_rect(height, width, min_h, max_h, min_w, max_w, min_area, max_area):
-    for _ in range(100):
+    for _ in range(1000):
         rect_h = random.randint(min_h, max_h)
         rect_w = random.randint(min_w, max_w)
         area = rect_h * rect_w
@@ -127,19 +127,19 @@ def main():
     parser.add_argument("--num-samples", type=int, default=200)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--min-mask-height", type=int, default=25)
-    parser.add_argument("--max-mask-height", type=int, default=160)
+    parser.add_argument("--max-mask-height", type=int, default=90)
     parser.add_argument("--min-mask-width", type=int, default=25)
-    parser.add_argument("--max-mask-width", type=int, default=160)
+    parser.add_argument("--max-mask-width", type=int, default=90)
     parser.add_argument(
         "--min-mask-area-fraction",
         type=float,
-        default=0.06,
+        default=0.01,
         help="Minimum mask area as a fraction of the full BEV image area.",
     )
     parser.add_argument(
         "--max-mask-area-fraction",
         type=float,
-        default=0.12,
+        default=0.03,
         help="Maximum mask area as a fraction of the full BEV image area.",
     )
     parser.add_argument(

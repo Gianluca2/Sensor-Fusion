@@ -126,6 +126,9 @@ def largest_connected_component(mask: np.ndarray) -> np.ndarray:
 
 
 def postprocess_prediction(probs: np.ndarray, threshold: float, max_area_fraction: float) -> np.ndarray:
+    if max_area_fraction >= 1.0:
+        return probs >= threshold
+
     area_limited = limit_prediction_area(probs, threshold, max_area_fraction)
     return largest_connected_component(area_limited)
 
@@ -205,7 +208,7 @@ def main():
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--num-outputs", type=int, default=10)
     parser.add_argument("--threshold", type=float, default=None)
-    parser.add_argument("--max-prediction-area-fraction", type=float, default=0.12)
+    parser.add_argument("--max-prediction-area-fraction", type=float, default=1.0)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

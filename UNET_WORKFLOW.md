@@ -47,12 +47,11 @@ Useful parameters:
 
 ```text
 --num-samples 200
---epochs 10
+--epochs 100
 --batch-size 4
 --min-mask-occupied-cells 50
---min-mask-area-fraction 0.06
---max-mask-area-fraction 0.12
---max-prediction-area-fraction 0.12
+--min-mask-area-fraction 0.01
+--max-mask-area-fraction 0.03
 --lr 0.0003
 ```
 
@@ -60,8 +59,9 @@ Useful parameters:
 space. This keeps training examples focused on regions where the clean BEV had
 LiDAR/radar content before masking.
 
-The generated fault mask is constrained to 6-12% of the full BEV image area.
-The predicted mask is post-processed so it cannot exceed 12% of the image.
+The generated fault mask is constrained to 1-3% of the full BEV image area.
+By default, the predicted mask is not size-capped; the U-Net must learn the
+fault size from training.
 
 ## Output
 

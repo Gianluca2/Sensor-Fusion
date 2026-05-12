@@ -33,13 +33,14 @@ def main():
         description="Run BEV projection, U-Net dataset creation, training, and prediction."
     )
     parser.add_argument("--num-samples", type=int, default=200)
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--min-mask-occupied-cells", type=int, default=50)
-    parser.add_argument("--min-mask-area-fraction", type=float, default=0.06)
-    parser.add_argument("--max-mask-area-fraction", type=float, default=0.12)
-    parser.add_argument("--max-prediction-area-fraction", type=float, default=0.12)
+    parser.add_argument("--min-mask-area-fraction", type=float, default=0.01)
+    parser.add_argument("--max-mask-area-fraction", type=float, default=0.03)
+    parser.add_argument("--max-prediction-area-fraction", type=float, default=1.0)
+    parser.add_argument("--loss", default="bce_dice", choices=["bce_dice", "bce_iou", "bce_tversky"])
     parser.add_argument("--dataset-dir", default=DEFAULT_DATASET_DIR)
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--prediction-output", default=DEFAULT_PREDICTION_OUTPUT)
@@ -99,6 +100,8 @@ def main():
                 str(args.batch_size),
                 "--lr",
                 str(args.lr),
+                "--loss",
+                args.loss,
             ],
         )
 
