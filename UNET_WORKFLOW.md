@@ -75,3 +75,34 @@ The model is saved to:
 ```text
 C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\models\unet_bev_mask.pt
 ```
+
+## Comparing Loss Functions
+
+Run:
+
+```powershell
+compare_loss_functions.py
+```
+
+This trains two models on the same dataset:
+
+- `bce_iou`: binary cross entropy plus IoU/Jaccard loss
+- `bce_tversky`: binary cross entropy plus Tversky loss
+
+Metrics are written to:
+
+```text
+C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\models\metrics_bce_iou.csv
+C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\models\metrics_bce_tversky.csv
+```
+
+How to choose the better model:
+
+- higher validation IoU = better overlap
+- higher validation F1 = better balance between predicted and actual mask
+- lower false positive cells = less extra blue area
+- lower false negative cells = less missed red area
+
+For the thesis, report validation IoU and F1 as primary metrics, then use false
+positive and false negative cell counts to explain whether one loss overpredicts
+or underpredicts the faulty area.
