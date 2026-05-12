@@ -14,7 +14,13 @@ from make_unet_dataset import (
     load_clean_bev,
     make_sample,
 )
-from predict_unet import bounding_box, mask_iou, overlay_masks, make_input_preview
+from predict_unet import (
+    bounding_box,
+    mask_iou,
+    overlay_masks,
+    make_input_preview,
+    postprocess_prediction,
+)
 from unet_model import SmallUNet
 
 
@@ -48,13 +54,13 @@ def load_model(model_path: Path, device):
     return model, checkpoint
 
 
-def predict_mask(model, device, x: np.ndarray, threshold: float):
+def predict_mask(model, device, x: np.ndarray, threshold: float, max_prediction_area_fraction: float):
     with torch.no_grad():
         tensor = torch.from_numpy(x[None, :, :, :].astype(np.float32)).to(device)
         logits = model(tensor)
         probs = torch.sigmoid(logits)[0, 0].cpu().numpy()
 
-    return probs >= threshold
+    return postprocess_prediction(probs, threshold, max_prediction_area_fraction)
 
 
 def stack_comparison(left: np.ndarray, right: np.ndarray) -> np.ndarray:
@@ -65,10 +71,10 @@ def stack_comparison(left: np.ndarray, right: np.ndarray) -> np.ndarray:
     return np.concatenate([left, separator, right], axis=1)
 
 
-def predict_and_overlay(model_path: Path, device, faulty, actual, threshold_override):
+def predict_and_overlay(model_path: Path, device, faulty, actual, threshold_override, max_prediction_area_fraction):
     model, checkpoint = load_model(model_path, device)
     threshold = threshold_override if threshold_override is not None else checkpoint.get("threshold", 0.5)
-    predicted = predict_mask(model, device, faulty, threshold)
+    predicted = predict_mask(model, device, faulty, threshold, max_prediction_area_fraction)
     overlay = overlay_masks(make_input_preview(faulty), actual >= 0.5, predicted)
     iou = mask_iou(predicted, actual >= 0.5)
 
@@ -93,10 +99,12 @@ def main():
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--threshold", type=float, default=None)
     parser.add_argument("--min-mask-height", type=int, default=25)
-    parser.add_argument("--max-mask-height", type=int, default=90)
+    parser.add_argument("--max-mask-height", type=int, default=160)
     parser.add_argument("--min-mask-width", type=int, default=25)
-    parser.add_argument("--max-mask-width", type=int, default=90)
-    parser.add_argument("--max-mask-area-fraction", type=float, default=0.08)
+    parser.add_argument("--max-mask-width", type=int, default=160)
+    parser.add_argument("--min-mask-area-fraction", type=float, default=0.06)
+    parser.add_argument("--max-mask-area-fraction", type=float, default=0.12)
+    parser.add_argument("--max-prediction-area-fraction", type=float, default=0.12)
     parser.add_argument("--min-mask-occupied-cells", type=int, default=50)
     parser.add_argument("--occupancy-threshold", type=float, default=0.0)
     parser.add_argument("--max-mask-attempts", type=int, default=500)
@@ -125,6 +133,7 @@ def main():
         faulty,
         actual,
         args.threshold,
+        args.max_prediction_area_fraction,
     )
     tversky_result = predict_and_overlay(
         Path(args.tversky_model_path),
@@ -132,6 +141,7 @@ def main():
         faulty,
         actual,
         args.threshold,
+        args.max_prediction_area_fraction,
     )
     comparison = stack_comparison(iou_result["overlay"], tversky_result["overlay"])
 
@@ -154,10 +164,12 @@ def main():
     print(f"IoU-loss model: {iou_result['model_path']}")
     print(f"  threshold: {iou_result['threshold']:.3f}")
     print(f"  mask IoU: {iou_result['iou']:.4f}")
+    print(f"  predicted area fraction: {np.count_nonzero(iou_result['predicted']) / iou_result['predicted'].size:.4f}")
     print(f"  predicted box: {iou_result['predicted_box']}")
     print(f"Tversky-loss model: {tversky_result['model_path']}")
     print(f"  threshold: {tversky_result['threshold']:.3f}")
     print(f"  mask IoU: {tversky_result['iou']:.4f}")
+    print(f"  predicted area fraction: {np.count_nonzero(tversky_result['predicted']) / tversky_result['predicted'].size:.4f}")
     print(f"  predicted box: {tversky_result['predicted_box']}")
     print(f"Mask metadata: {metadata['mask']}")
     print("Comparison image: left=BCE+IoU model, right=BCE+Tversky model")

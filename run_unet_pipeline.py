@@ -37,7 +37,9 @@ def main():
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--min-mask-occupied-cells", type=int, default=50)
-    parser.add_argument("--max-mask-area-fraction", type=float, default=0.08)
+    parser.add_argument("--min-mask-area-fraction", type=float, default=0.06)
+    parser.add_argument("--max-mask-area-fraction", type=float, default=0.12)
+    parser.add_argument("--max-prediction-area-fraction", type=float, default=0.12)
     parser.add_argument("--dataset-dir", default=DEFAULT_DATASET_DIR)
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--prediction-output", default=DEFAULT_PREDICTION_OUTPUT)
@@ -74,6 +76,8 @@ def main():
             args.dataset_dir,
             "--min-mask-occupied-cells",
             str(args.min_mask_occupied_cells),
+            "--min-mask-area-fraction",
+            str(args.min_mask_area_fraction),
             "--max-mask-area-fraction",
             str(args.max_mask_area_fraction),
         ],
@@ -111,6 +115,8 @@ def main():
             args.prediction_dir,
             "--num-outputs",
             str(args.num_prediction_outputs),
+            "--max-prediction-area-fraction",
+            str(args.max_prediction_area_fraction),
         ],
     )
 

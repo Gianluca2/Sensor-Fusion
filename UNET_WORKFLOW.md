@@ -50,7 +50,9 @@ Useful parameters:
 --epochs 10
 --batch-size 4
 --min-mask-occupied-cells 50
---max-mask-area-fraction 0.08
+--min-mask-area-fraction 0.06
+--max-mask-area-fraction 0.12
+--max-prediction-area-fraction 0.12
 --lr 0.0003
 ```
 
@@ -58,7 +60,8 @@ Useful parameters:
 space. This keeps training examples focused on regions where the clean BEV had
 LiDAR/radar content before masking.
 
-`--max-mask-area-fraction 0.08` caps masks at 8% of the full BEV image area.
+The generated fault mask is constrained to 6-12% of the full BEV image area.
+The predicted mask is post-processed so it cannot exceed 12% of the image.
 
 ## Output
 
