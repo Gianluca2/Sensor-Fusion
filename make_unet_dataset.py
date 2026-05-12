@@ -38,9 +38,18 @@ def load_clean_bev(path: Path, layers):
     return np.stack(channels, axis=0), metadata
 
 
-def random_rect(height, width, min_h, max_h, min_w, max_w):
-    rect_h = random.randint(min_h, max_h)
-    rect_w = random.randint(min_w, max_w)
+def random_rect(height, width, min_h, max_h, min_w, max_w, max_area):
+    for _ in range(100):
+        rect_h = random.randint(min_h, max_h)
+        rect_w = random.randint(min_w, max_w)
+        if rect_h * rect_w <= max_area:
+            break
+    else:
+        raise RuntimeError(
+            "Could not sample a mask under the max area limit. "
+            "Lower --min-mask-height/width or increase --max-mask-area-fraction."
+        )
+
     row = random.randint(0, max(0, height - rect_h))
     col = random.randint(0, max(0, width - rect_w))
     return row, row + rect_h, col, col + rect_w
@@ -53,6 +62,7 @@ def build_occupancy_map(clean: np.ndarray, threshold: float) -> np.ndarray:
 
 def choose_nonempty_rect(occupancy: np.ndarray, args):
     height, width = occupancy.shape
+    max_area = int(height * width * args.max_mask_area_fraction)
 
     for _ in range(args.max_mask_attempts):
         row_start, row_end, col_start, col_end = random_rect(
@@ -62,11 +72,13 @@ def choose_nonempty_rect(occupancy: np.ndarray, args):
             max_h=args.max_mask_height,
             min_w=args.min_mask_width,
             max_w=args.max_mask_width,
+            max_area=max_area,
         )
         occupied_cells = int(np.count_nonzero(occupancy[row_start:row_end, col_start:col_end]))
+        mask_area = (row_end - row_start) * (col_end - col_start)
 
-        if occupied_cells >= args.min_mask_occupied_cells:
-            return row_start, row_end, col_start, col_end, occupied_cells
+        if occupied_cells >= args.min_mask_occupied_cells and mask_area <= max_area:
+            return row_start, row_end, col_start, col_end, occupied_cells, mask_area
 
     raise RuntimeError(
         "Could not find a mask region with enough occupied BEV cells. "
@@ -76,7 +88,7 @@ def choose_nonempty_rect(occupancy: np.ndarray, args):
 
 def make_sample(clean: np.ndarray, occupancy: np.ndarray, sample_index: int, args):
     _, height, width = clean.shape
-    row_start, row_end, col_start, col_end, occupied_cells = choose_nonempty_rect(
+    row_start, row_end, col_start, col_end, occupied_cells, mask_area = choose_nonempty_rect(
         occupancy,
         args,
     )
@@ -94,6 +106,8 @@ def make_sample(clean: np.ndarray, occupancy: np.ndarray, sample_index: int, arg
             "row_end": row_end,
             "col_start": col_start,
             "col_end": col_end,
+            "area_cells": mask_area,
+            "area_fraction": mask_area / (height * width),
             "occupied_cells_before_masking": occupied_cells,
         },
     }
@@ -113,6 +127,12 @@ def main():
     parser.add_argument("--max-mask-height", type=int, default=90)
     parser.add_argument("--min-mask-width", type=int, default=25)
     parser.add_argument("--max-mask-width", type=int, default=90)
+    parser.add_argument(
+        "--max-mask-area-fraction",
+        type=float,
+        default=0.08,
+        help="Maximum mask area as a fraction of the full BEV image area.",
+    )
     parser.add_argument(
         "--min-mask-occupied-cells",
         type=int,
@@ -148,6 +168,7 @@ def main():
         "layers": DEFAULT_LAYERS,
         "occupancy_layers": [DEFAULT_LAYERS[index] for index in OCCUPANCY_LAYER_INDICES],
         "min_mask_occupied_cells": args.min_mask_occupied_cells,
+        "max_mask_area_fraction": args.max_mask_area_fraction,
         "source_metadata": source_metadata,
         "samples": [],
     }
@@ -175,6 +196,7 @@ def main():
     print(f"Input shape per sample: {clean.shape}")
     print(f"Occupied BEV cells available: {np.count_nonzero(occupancy)}")
     print(f"Minimum occupied cells per mask: {args.min_mask_occupied_cells}")
+    print(f"Maximum mask area fraction: {args.max_mask_area_fraction:.3f}")
 
 
 if __name__ == "__main__":

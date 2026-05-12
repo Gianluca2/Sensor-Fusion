@@ -16,9 +16,15 @@ DEFAULT_SAMPLE = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_dataset"
     r"\sample_000000.npz"
 )
+DEFAULT_SAMPLE_DIR = (
+    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_dataset"
+)
 DEFAULT_OUTPUT = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_predictions"
     r"\sample_000000_overlay.png"
+)
+DEFAULT_OUTPUT_DIR = (
+    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_predictions"
 )
 
 
@@ -98,21 +104,8 @@ def load_model(model_path: Path, device):
     return model, checkpoint
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Predict a BEV fault mask with U-Net and save red/blue overlay."
-    )
-    parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
-    parser.add_argument("--sample", default=DEFAULT_SAMPLE)
-    parser.add_argument("--output", default=DEFAULT_OUTPUT)
-    parser.add_argument("--threshold", type=float, default=None)
-    args = parser.parse_args()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, checkpoint = load_model(Path(args.model_path), device)
-    threshold = args.threshold if args.threshold is not None else checkpoint.get("threshold", 0.5)
-
-    x, actual = load_sample(Path(args.sample))
+def predict_one(model, device, sample_path: Path, output_path: Path, threshold: float):
+    x, actual = load_sample(sample_path)
     with torch.no_grad():
         tensor = torch.from_numpy(x[None, :, :, :]).to(device)
         logits = model(tensor)
@@ -122,18 +115,55 @@ def main():
     preview = make_input_preview(x)
     overlay = overlay_masks(preview, actual >= 0.5, predicted)
 
-    output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     write_image(output_path, overlay)
 
-    print(f"Sample: {args.sample}")
-    print(f"Model: {args.model_path}")
+    iou = mask_iou(predicted, actual >= 0.5)
+    print(f"Sample: {sample_path}")
     print(f"Output overlay: {output_path}")
-    print(f"Threshold: {threshold:.3f}")
-    print(f"IoU: {mask_iou(predicted, actual >= 0.5):.4f}")
-    print("Overlay colors: red=actual mask, blue=predicted mask, magenta=overlap")
+    print(f"IoU: {iou:.4f}")
     print(f"Actual box: {bounding_box(actual >= 0.5)}")
     print(f"Predicted box: {bounding_box(predicted)}")
+    return iou
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Predict a BEV fault mask with U-Net and save red/blue overlay."
+    )
+    parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--sample", default=None)
+    parser.add_argument("--sample-dir", default=DEFAULT_SAMPLE_DIR)
+    parser.add_argument("--output", default=DEFAULT_OUTPUT)
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--num-outputs", type=int, default=10)
+    parser.add_argument("--threshold", type=float, default=None)
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, checkpoint = load_model(Path(args.model_path), device)
+    threshold = args.threshold if args.threshold is not None else checkpoint.get("threshold", 0.5)
+
+    print(f"Model: {args.model_path}")
+    print(f"Threshold: {threshold:.3f}")
+    print("Overlay colors: red=actual mask, blue=predicted mask, magenta=overlap")
+
+    if args.sample is not None:
+        predict_one(model, device, Path(args.sample), Path(args.output), threshold)
+        return
+
+    sample_paths = sorted(Path(args.sample_dir).glob("sample_*.npz"))[:args.num_outputs]
+    if not sample_paths:
+        sample_paths = [Path(DEFAULT_SAMPLE)]
+
+    ious = []
+    output_dir = Path(args.output_dir)
+    for sample_path in sample_paths:
+        output_path = output_dir / f"{sample_path.stem}_overlay.png"
+        ious.append(predict_one(model, device, sample_path, output_path, threshold))
+
+    print(f"Wrote {len(ious)} overlay images to {output_dir}")
+    print(f"Mean IoU over saved outputs: {sum(ious) / len(ious):.4f}")
 
 
 if __name__ == "__main__":

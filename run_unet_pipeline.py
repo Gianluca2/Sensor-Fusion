@@ -16,6 +16,10 @@ DEFAULT_PREDICTION_OUTPUT = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs"
     r"\unet_predictions\sample_000000_overlay.png"
 )
+DEFAULT_PREDICTION_DIR = (
+    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs"
+    r"\unet_predictions"
+)
 
 
 def run_step(label: str, command: list[str]):
@@ -31,10 +35,14 @@ def main():
     parser.add_argument("--num-samples", type=int, default=200)
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--min-mask-occupied-cells", type=int, default=50)
+    parser.add_argument("--max-mask-area-fraction", type=float, default=0.08)
     parser.add_argument("--dataset-dir", default=DEFAULT_DATASET_DIR)
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--prediction-output", default=DEFAULT_PREDICTION_OUTPUT)
+    parser.add_argument("--prediction-dir", default=DEFAULT_PREDICTION_DIR)
+    parser.add_argument("--num-prediction-outputs", type=int, default=10)
     parser.add_argument(
         "--skip-bev",
         action="store_true",
@@ -66,6 +74,8 @@ def main():
             args.dataset_dir,
             "--min-mask-occupied-cells",
             str(args.min_mask_occupied_cells),
+            "--max-mask-area-fraction",
+            str(args.max_mask_area_fraction),
         ],
     )
 
@@ -83,6 +93,8 @@ def main():
                 str(args.epochs),
                 "--batch-size",
                 str(args.batch_size),
+                "--lr",
+                str(args.lr),
             ],
         )
 
@@ -93,15 +105,17 @@ def main():
             str(PROJECT_DIR / "predict_unet.py"),
             "--model-path",
             args.model_path,
-            "--sample",
-            str(Path(args.dataset_dir) / "sample_000000.npz"),
-            "--output",
-            args.prediction_output,
+            "--sample-dir",
+            args.dataset_dir,
+            "--output-dir",
+            args.prediction_dir,
+            "--num-outputs",
+            str(args.num_prediction_outputs),
         ],
     )
 
     print("\nPipeline complete.")
-    print(f"Prediction overlay: {args.prediction_output}")
+    print(f"Prediction overlays: {args.prediction_dir}")
     print("Colors: red=actual mask, blue=predicted mask, magenta=overlap")
 
 

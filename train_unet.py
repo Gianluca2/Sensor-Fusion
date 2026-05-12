@@ -205,7 +205,7 @@ def main():
     parser.add_argument("--metrics-path", default=DEFAULT_METRICS_PATH)
     parser.add_argument("--epochs", type=int, default=15)
     parser.add_argument("--batch-size", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--base-channels", type=int, default=16)
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--threshold", type=float, default=0.5)

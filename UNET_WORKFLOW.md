@@ -50,19 +50,25 @@ Useful parameters:
 --epochs 15
 --batch-size 4
 --min-mask-occupied-cells 50
+--max-mask-area-fraction 0.08
+--lr 0.0003
 ```
 
 `--min-mask-occupied-cells` rejects random mask locations that cover mostly empty
 space. This keeps training examples focused on regions where the clean BEV had
 LiDAR/radar content before masking.
 
+`--max-mask-area-fraction 0.08` caps masks at 8% of the full BEV image area.
+
 ## Output
 
-The prediction overlay is saved to:
+Prediction overlays are saved to:
 
 ```text
-C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_predictions\sample_000000_overlay.png
+C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_predictions\
 ```
+
+By default, `predict_unet.py` writes 10 predicted-vs-actual overlay images.
 
 Overlay colors:
 
