@@ -33,7 +33,7 @@ def main():
         description="Run BEV projection, U-Net dataset creation, training, and prediction."
     )
     parser.add_argument("--num-samples", type=int, default=200)
-    parser.add_argument("--epochs", type=int, default=15)
+    parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--min-mask-occupied-cells", type=int, default=50)

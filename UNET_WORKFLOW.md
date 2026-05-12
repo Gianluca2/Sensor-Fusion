@@ -47,7 +47,7 @@ Useful parameters:
 
 ```text
 --num-samples 200
---epochs 15
+--epochs 10
 --batch-size 4
 --min-mask-occupied-cells 50
 --max-mask-area-fraction 0.08
