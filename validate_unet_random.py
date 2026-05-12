@@ -9,8 +9,10 @@ import torch
 from bev_projection import write_image
 from make_unet_dataset import (
     DEFAULT_BEV,
+    DEFAULT_BEV_DIR,
     DEFAULT_LAYERS,
     build_occupancy_map,
+    find_bev_files,
     load_clean_bev,
     make_sample,
 )
@@ -93,6 +95,11 @@ def main():
         description="Create one fresh random BEV mask and compare IoU-loss vs Tversky-loss predictions."
     )
     parser.add_argument("--bev", default=DEFAULT_BEV)
+    parser.add_argument(
+        "--bev-dir",
+        default=DEFAULT_BEV_DIR,
+        help="Directory of clean BEV files. A random BEV is selected from here when available.",
+    )
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--iou-model-path", default=DEFAULT_IOU_MODEL_PATH)
     parser.add_argument("--tversky-model-path", default=DEFAULT_TVERSKY_MODEL_PATH)
@@ -122,7 +129,9 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    clean, _ = load_clean_bev(Path(args.bev), DEFAULT_LAYERS)
+    bev_files = find_bev_files(Path(args.bev_dir)) if args.bev_dir else []
+    source_bev = random.choice(bev_files) if bev_files else Path(args.bev)
+    clean, _ = load_clean_bev(source_bev, DEFAULT_LAYERS)
     occupancy = build_occupancy_map(clean, args.occupancy_threshold)
     faulty, actual, metadata = make_sample(clean, occupancy, sample_index=0, args=args)
 
@@ -160,6 +169,7 @@ def main():
     print(f"Saved IoU-loss overlay: {iou_path}")
     print(f"Saved Tversky-loss overlay: {tversky_path}")
     print(f"Seed: {args.seed}")
+    print(f"Source BEV: {source_bev}")
     print(f"Actual box: {bounding_box(actual >= 0.5)}")
     print(f"IoU-loss model: {iou_result['model_path']}")
     print(f"  threshold: {iou_result['threshold']:.3f}")

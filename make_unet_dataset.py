@@ -13,6 +13,9 @@ DEFAULT_BEV = (
 DEFAULT_OUTPUT_DIR = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_dataset"
 )
+DEFAULT_BEV_DIR = (
+    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\bev_multi"
+)
 DEFAULT_LAYERS = [
     "lidar_density",
     "lidar_height",
@@ -36,6 +39,13 @@ def load_clean_bev(path: Path, layers):
             metadata = json.loads(str(data["metadata_json"].item()))
 
     return np.stack(channels, axis=0), metadata
+
+
+def find_bev_files(bev_dir: Path):
+    return sorted(
+        path for path in bev_dir.rglob("*.npz")
+        if path.name != "manifest.npz"
+    )
 
 
 def random_rect(height, width, min_h, max_h, min_w, max_w, min_area, max_area):
@@ -123,6 +133,11 @@ def main():
         description="Create synthetic BEV mask samples for U-Net training."
     )
     parser.add_argument("--bev", default=DEFAULT_BEV)
+    parser.add_argument(
+        "--bev-dir",
+        default=None,
+        help="Directory tree of clean BEV .npz files. If provided, samples are drawn across all files.",
+    )
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--num-samples", type=int, default=200)
     parser.add_argument("--seed", type=int, default=7)
@@ -168,24 +183,34 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    clean, source_metadata = load_clean_bev(Path(args.bev), DEFAULT_LAYERS)
-    occupancy = build_occupancy_map(clean, args.occupancy_threshold)
+    if args.bev_dir is not None:
+        bev_files = find_bev_files(Path(args.bev_dir))
+        if not bev_files:
+            raise FileNotFoundError(f"No BEV .npz files found under {args.bev_dir}")
+    else:
+        bev_files = [Path(args.bev)]
 
     manifest = {
-        "source_bev": str(Path(args.bev)),
+        "source_bev": str(Path(args.bev)) if args.bev_dir is None else None,
+        "source_bev_dir": str(Path(args.bev_dir)) if args.bev_dir is not None else None,
+        "source_bev_count": len(bev_files),
         "num_samples": args.num_samples,
         "layers": DEFAULT_LAYERS,
         "occupancy_layers": [DEFAULT_LAYERS[index] for index in OCCUPANCY_LAYER_INDICES],
         "min_mask_occupied_cells": args.min_mask_occupied_cells,
         "min_mask_area_fraction": args.min_mask_area_fraction,
         "max_mask_area_fraction": args.max_mask_area_fraction,
-        "source_metadata": source_metadata,
         "samples": [],
     }
 
     for index in range(args.num_samples):
+        source_bev = bev_files[index % len(bev_files)]
+        clean, source_metadata = load_clean_bev(source_bev, DEFAULT_LAYERS)
+        occupancy = build_occupancy_map(clean, args.occupancy_threshold)
         faulty, target, sample_metadata = make_sample(clean, occupancy, index, args)
         sample_path = output_dir / f"sample_{index:06d}.npz"
+        sample_metadata["source_bev"] = str(source_bev)
+        sample_metadata["source_metadata"] = source_metadata
 
         np.savez_compressed(
             sample_path,
@@ -203,8 +228,7 @@ def main():
 
     print(f"Wrote {args.num_samples} samples to {output_dir}")
     print(f"Wrote manifest: {manifest_path}")
-    print(f"Input shape per sample: {clean.shape}")
-    print(f"Occupied BEV cells available: {np.count_nonzero(occupancy)}")
+    print(f"Source BEV files: {len(bev_files)}")
     print(f"Minimum occupied cells per mask: {args.min_mask_occupied_cells}")
     print(f"Minimum mask area fraction: {args.min_mask_area_fraction:.3f}")
     print(f"Maximum mask area fraction: {args.max_mask_area_fraction:.3f}")

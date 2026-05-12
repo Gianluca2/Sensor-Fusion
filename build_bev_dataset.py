@@ -1,0 +1,333 @@
+from pathlib import Path
+import argparse
+import bisect
+import json
+
+import numpy as np
+
+from bev_projection import (
+    make_rgb_preview,
+    project_lidar_bev,
+    project_radar_bev,
+    save_bev,
+    write_image,
+)
+from visualize_lidar import read_aeva_bin
+from visualize_radar import read_continental_bin
+
+
+DEFAULT_DATA_ROOT = r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\Data"
+DEFAULT_OUTPUT_DIR = r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\bev_multi"
+
+
+def timestamp_from_path(path: Path) -> int:
+    return int(path.stem)
+
+
+def find_first_file(root: Path, name: str):
+    matches = sorted(root.rglob(name), key=lambda path: len(path.parts))
+    return matches[0] if matches else None
+
+
+def find_aeva_dir(root: Path):
+    candidates = []
+    for path in root.rglob("*"):
+        if path.is_dir() and path.name.lower() == "aeva" and list(path.glob("*.bin")):
+            candidates.append(path)
+    return sorted(candidates, key=lambda path: len(path.parts))[0] if candidates else None
+
+
+def find_continental_dir(root: Path):
+    candidates = []
+    for path in root.rglob("*"):
+        if not path.is_dir() or not list(path.glob("*.bin")):
+            continue
+
+        lower_parts = [part.lower() for part in path.parts]
+        if "continentalobject" in lower_parts or "continental_object" in lower_parts:
+            continue
+        if path.name.lower() == "continental" or "continental" in lower_parts:
+            candidates.append(path)
+
+    return sorted(candidates, key=lambda path: len(path.parts))[0] if candidates else None
+
+
+def discover_scene_roots(data_root: Path):
+    scenes = []
+    for calibration_path in data_root.rglob("Continental_LiDAR.txt"):
+        scene_root = calibration_path.parent.parent
+        aeva_dir = find_aeva_dir(scene_root)
+        radar_dir = find_continental_dir(scene_root)
+        aeva_gt = find_first_file(scene_root, "Aeva_gt.txt")
+        radar_gt = find_first_file(scene_root, "Continental_gt.txt")
+
+        if aeva_dir and radar_dir and aeva_gt and radar_gt:
+            scenes.append({
+                "name": scene_root.name,
+                "root": scene_root,
+                "aeva_dir": aeva_dir,
+                "radar_dir": radar_dir,
+                "aeva_gt": aeva_gt,
+                "radar_gt": radar_gt,
+            })
+
+    unique = {}
+    for scene in scenes:
+        key = str(scene["root"]).lower()
+        unique[key] = scene
+
+    sorted_scenes = sorted(unique.values(), key=lambda item: len(item["root"].parts))
+    filtered = []
+    for scene in sorted_scenes:
+        root = scene["root"]
+        if any(parent["root"] in root.parents for parent in filtered):
+            continue
+        filtered.append(scene)
+
+    return sorted(filtered, key=lambda item: str(item["root"]).lower())
+
+
+def load_frames(folder: Path):
+    frames = [{"timestamp": timestamp_from_path(path), "path": path} for path in folder.glob("*.bin")]
+    return sorted(frames, key=lambda row: row["timestamp"])
+
+
+def load_poses(path: Path):
+    poses = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) != 8:
+                continue
+
+            timestamp = int(parts[0])
+            values = [float(value) for value in parts[1:]]
+            poses.append({
+                "timestamp": timestamp,
+                "position": np.asarray(values[:3], dtype=np.float64),
+                "quat_xyzw": np.asarray(values[3:], dtype=np.float64),
+            })
+
+    return sorted(poses, key=lambda row: row["timestamp"])
+
+
+def nearest_by_timestamp(timestamp: int, rows):
+    timestamps = [row["timestamp"] for row in rows]
+    insert_at = bisect.bisect_left(timestamps, timestamp)
+    best = None
+
+    for index in (insert_at - 1, insert_at):
+        if index < 0 or index >= len(rows):
+            continue
+
+        row = rows[index]
+        delta = row["timestamp"] - timestamp
+        if best is None or abs(delta) < abs(best["delta"]):
+            best = {**row, "delta": delta}
+
+    return best
+
+
+def quat_xyzw_to_matrix(quat):
+    x, y, z, w = quat
+    norm = np.linalg.norm(quat)
+    if norm == 0:
+        return np.eye(3, dtype=np.float64)
+
+    x, y, z, w = quat / norm
+    return np.asarray([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ], dtype=np.float64)
+
+
+def pose_to_transform(pose):
+    transform = np.eye(4, dtype=np.float64)
+    transform[:3, :3] = quat_xyzw_to_matrix(pose["quat_xyzw"])
+    transform[:3, 3] = pose["position"]
+    return transform
+
+
+def invert_transform(transform):
+    inverse = np.eye(4, dtype=np.float64)
+    rotation = transform[:3, :3]
+    translation = transform[:3, 3]
+    inverse[:3, :3] = rotation.T
+    inverse[:3, 3] = -rotation.T @ translation
+    return inverse
+
+
+def transform_xyz(xyz, transform):
+    xyz_h = np.ones((len(xyz), 4), dtype=np.float64)
+    xyz_h[:, :3] = xyz
+    return (transform @ xyz_h.T).T[:, :3]
+
+
+def aggregate_lidar(lidar_frames, lidar_poses, start_index, scan_count):
+    reference = lidar_frames[start_index]
+    reference_pose = nearest_by_timestamp(reference["timestamp"], lidar_poses)
+    reference_to_world = pose_to_transform(reference_pose)
+    world_to_reference = invert_transform(reference_to_world)
+    aggregated = []
+
+    for frame in lidar_frames[start_index:start_index + scan_count]:
+        pose = nearest_by_timestamp(frame["timestamp"], lidar_poses)
+        sensor_to_world = pose_to_transform(pose)
+        sensor_to_reference = world_to_reference @ sensor_to_world
+        points = read_aeva_bin(frame["path"])[:, :3]
+        aggregated.append(transform_xyz(points, sensor_to_reference).astype(np.float32))
+
+    return np.vstack(aggregated), reference
+
+
+def aggregate_radar(lidar_frames, radar_frames, lidar_poses, radar_poses, start_index, scan_count):
+    reference = lidar_frames[start_index]
+    reference_pose = nearest_by_timestamp(reference["timestamp"], lidar_poses)
+    reference_to_world = pose_to_transform(reference_pose)
+    world_to_reference = invert_transform(reference_to_world)
+    aggregated = []
+    matched_radar = []
+
+    for lidar_frame in lidar_frames[start_index:start_index + scan_count]:
+        radar_frame = nearest_by_timestamp(lidar_frame["timestamp"], radar_frames)
+        radar_pose = nearest_by_timestamp(radar_frame["timestamp"], radar_poses)
+        radar_to_world = pose_to_transform(radar_pose)
+        radar_to_reference = world_to_reference @ radar_to_world
+
+        radar_points = read_continental_bin(radar_frame["path"])
+        radar_points_lidar = radar_points.copy()
+        radar_points_lidar[:, :3] = transform_xyz(radar_points[:, :3], radar_to_reference)
+        aggregated.append(radar_points_lidar.astype(np.float32))
+        matched_radar.append({
+            "timestamp": radar_frame["timestamp"],
+            "path": str(radar_frame["path"]),
+            "delta_ms": (radar_frame["timestamp"] - lidar_frame["timestamp"]) / 1_000_000.0,
+        })
+
+    return np.vstack(aggregated), matched_radar
+
+
+def build_scene_bevs(scene, args):
+    lidar_frames = load_frames(scene["aeva_dir"])
+    radar_frames = load_frames(scene["radar_dir"])
+    lidar_poses = load_poses(scene["aeva_gt"])
+    radar_poses = load_poses(scene["radar_gt"])
+
+    if len(lidar_frames) < args.aggregate_scans:
+        print(f"Skipping {scene['name']}: not enough LiDAR frames")
+        return 0
+
+    scene_output_dir = Path(args.output_dir) / scene["name"]
+    scene_output_dir.mkdir(parents=True, exist_ok=True)
+    x_range = (args.x_min, args.x_max)
+    y_range = (args.y_min, args.y_max)
+
+    max_start = len(lidar_frames) - args.aggregate_scans
+    start_indices = range(0, max_start + 1, args.stride)
+    written = 0
+
+    for start_index in start_indices:
+        if written >= args.frames_per_scene:
+            break
+
+        lidar_xyz, reference = aggregate_lidar(
+            lidar_frames,
+            lidar_poses,
+            start_index,
+            args.aggregate_scans,
+        )
+        radar_points, matched_radar = aggregate_radar(
+            lidar_frames,
+            radar_frames,
+            lidar_poses,
+            radar_poses,
+            start_index,
+            args.aggregate_scans,
+        )
+
+        bev_layers = {}
+        bev_layers.update(project_lidar_bev(lidar_xyz, x_range, y_range, args.resolution))
+        bev_layers.update(project_radar_bev(radar_points, x_range, y_range, args.resolution))
+        rgb = make_rgb_preview(bev_layers)
+
+        stem = f"{scene['name']}_bev_{written:06d}"
+        npz_path = scene_output_dir / f"{stem}.npz"
+        image_path = scene_output_dir / f"{stem}.png"
+        metadata = {
+            "scene": scene["name"],
+            "scene_root": str(scene["root"]),
+            "reference_lidar_timestamp": reference["timestamp"],
+            "reference_lidar_path": str(reference["path"]),
+            "matched_radar": matched_radar,
+            "aggregate_scans": args.aggregate_scans,
+            "aggregation": "t_to_t_plus_scans_minus_1_motion_compensated_to_reference_lidar",
+            "x_range_m": list(x_range),
+            "y_range_m": list(y_range),
+            "resolution_m_per_cell": args.resolution,
+            "grid_shape": list(rgb.shape[:2]),
+        }
+
+        save_bev(npz_path, bev_layers, rgb, metadata)
+        write_image(image_path, rgb)
+        written += 1
+
+    print(f"{scene['name']}: wrote {written} BEV files to {scene_output_dir}")
+    return written
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Build multi-scene, motion-compensated LiDAR/radar BEV files."
+    )
+    parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--frames-per-scene", type=int, default=30)
+    parser.add_argument("--stride", type=int, default=10)
+    parser.add_argument("--aggregate-scans", type=int, default=3)
+    parser.add_argument("--x-min", type=float, default=0.0)
+    parser.add_argument("--x-max", type=float, default=80.0)
+    parser.add_argument("--y-min", type=float, default=-40.0)
+    parser.add_argument("--y-max", type=float, default=40.0)
+    parser.add_argument("--resolution", type=float, default=0.2)
+    args = parser.parse_args()
+
+    scenes = discover_scene_roots(Path(args.data_root))
+    if not scenes:
+        raise FileNotFoundError(f"No valid HeRCULES scenes found under {args.data_root}")
+
+    print("Discovered scenes:")
+    for scene in scenes:
+        print(f"  {scene['name']}: {scene['root']}")
+
+    total = 0
+    for scene in scenes:
+        total += build_scene_bevs(scene, args)
+
+    print(f"Total BEV files written: {total}")
+    manifest_path = Path(args.output_dir) / "manifest.json"
+    manifest = {
+        "data_root": str(Path(args.data_root)),
+        "output_dir": str(Path(args.output_dir)),
+        "aggregate_scans": args.aggregate_scans,
+        "frames_per_scene": args.frames_per_scene,
+        "stride": args.stride,
+        "total_bev_files": total,
+        "scenes": [
+            {
+                "name": scene["name"],
+                "root": str(scene["root"]),
+                "aeva_dir": str(scene["aeva_dir"]),
+                "radar_dir": str(scene["radar_dir"]),
+                "aeva_gt": str(scene["aeva_gt"]),
+                "radar_gt": str(scene["radar_gt"]),
+            }
+            for scene in scenes
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    print(f"Wrote manifest: {manifest_path}")
+
+
+if __name__ == "__main__":
+    main()

@@ -46,7 +46,7 @@ run_unet_pipeline.py
 Useful parameters:
 
 ```text
---num-samples 200
+--num-samples 600
 --epochs 100
 --batch-size 4
 --min-mask-occupied-cells 50
@@ -62,6 +62,12 @@ LiDAR/radar content before masking.
 The generated fault mask is constrained to 1-3% of the full BEV image area.
 By default, the predicted mask is not size-capped; the U-Net must learn the
 fault size from training.
+
+The pipeline first builds multi-scene BEV files from `Day_1_Parking`,
+`Day_2_Parking`, and `Day_3_Parking` when those folders are present. Each BEV
+aggregates three consecutive LiDAR/radar scans (`t`, `t+1`, `t+2`) into the
+reference LiDAR frame using the per-sensor pose ground truth, then samples masks
+across all generated BEVs.
 
 ## Output
 

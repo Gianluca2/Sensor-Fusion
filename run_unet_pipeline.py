@@ -8,6 +8,9 @@ PROJECT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATASET_DIR = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_dataset"
 )
+DEFAULT_BEV_DIR = (
+    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\bev_multi"
+)
 DEFAULT_MODEL_PATH = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\models"
     r"\unet_bev_mask.pt"
@@ -32,7 +35,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run BEV projection, U-Net dataset creation, training, and prediction."
     )
-    parser.add_argument("--num-samples", type=int, default=200)
+    parser.add_argument("--num-samples", type=int, default=600)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=3e-4)
@@ -42,6 +45,10 @@ def main():
     parser.add_argument("--max-prediction-area-fraction", type=float, default=1.0)
     parser.add_argument("--loss", default="bce_dice", choices=["bce_dice", "bce_iou", "bce_tversky"])
     parser.add_argument("--dataset-dir", default=DEFAULT_DATASET_DIR)
+    parser.add_argument("--bev-dir", default=DEFAULT_BEV_DIR)
+    parser.add_argument("--bev-frames-per-scene", type=int, default=30)
+    parser.add_argument("--bev-stride", type=int, default=10)
+    parser.add_argument("--aggregate-scans", type=int, default=3)
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--prediction-output", default=DEFAULT_PREDICTION_OUTPUT)
     parser.add_argument("--prediction-dir", default=DEFAULT_PREDICTION_DIR)
@@ -63,7 +70,18 @@ def main():
     if not args.skip_bev:
         run_step(
             "1. Create BEV projection",
-            [python, str(PROJECT_DIR / "bev_projection.py")],
+            [
+                python,
+                str(PROJECT_DIR / "build_bev_dataset.py"),
+                "--output-dir",
+                args.bev_dir,
+                "--frames-per-scene",
+                str(args.bev_frames_per_scene),
+                "--stride",
+                str(args.bev_stride),
+                "--aggregate-scans",
+                str(args.aggregate_scans),
+            ],
         )
 
     run_step(
@@ -75,6 +93,8 @@ def main():
             str(args.num_samples),
             "--output-dir",
             args.dataset_dir,
+            "--bev-dir",
+            args.bev_dir,
             "--min-mask-occupied-cells",
             str(args.min_mask_occupied_cells),
             "--min-mask-area-fraction",
