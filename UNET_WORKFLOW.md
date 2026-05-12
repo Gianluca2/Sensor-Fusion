@@ -119,6 +119,8 @@ This trains two models on the same dataset:
 - `bce_iou`: binary cross entropy plus IoU/Jaccard loss
 - `bce_tversky`: binary cross entropy plus Tversky loss
 
+By default, each comparison model trains for 20 epochs.
+
 Metrics are written to:
 
 ```text
