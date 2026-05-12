@@ -78,8 +78,8 @@ Run:
 validate_unet_random.py
 ```
 
-Each run creates a new random mask on the clean BEV, predicts the mask with the
-saved U-Net model, and writes one PNG overlay to:
+Each run creates one new random mask on the clean BEV, predicts that same masked
+input with both saved U-Net models, and writes PNG overlays to:
 
 ```text
 C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_random_validation\
@@ -87,6 +87,9 @@ C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_random_validat
 
 Use this for visual inspection after training. Leave `--seed` unset if you want a
 different mask every run.
+
+The comparison image places the BCE+IoU prediction on the left and the
+BCE+Tversky prediction on the right. Both sides use the same actual mask.
 
 Overlay colors:
 

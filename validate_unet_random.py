@@ -22,6 +22,14 @@ DEFAULT_MODEL_PATH = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\models"
     r"\unet_bev_mask.pt"
 )
+DEFAULT_IOU_MODEL_PATH = (
+    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\models"
+    r"\unet_bev_mask_bce_iou.pt"
+)
+DEFAULT_TVERSKY_MODEL_PATH = (
+    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\models"
+    r"\unet_bev_mask_bce_tversky.pt"
+)
 DEFAULT_OUTPUT_DIR = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs"
     r"\unet_random_validation"
@@ -49,12 +57,39 @@ def predict_mask(model, device, x: np.ndarray, threshold: float):
     return probs >= threshold
 
 
+def stack_comparison(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    if left.shape != right.shape:
+        raise ValueError(f"Comparison images must have same shape, got {left.shape} and {right.shape}")
+
+    separator = np.full((left.shape[0], 8, 3), 255, dtype=np.uint8)
+    return np.concatenate([left, separator, right], axis=1)
+
+
+def predict_and_overlay(model_path: Path, device, faulty, actual, threshold_override):
+    model, checkpoint = load_model(model_path, device)
+    threshold = threshold_override if threshold_override is not None else checkpoint.get("threshold", 0.5)
+    predicted = predict_mask(model, device, faulty, threshold)
+    overlay = overlay_masks(make_input_preview(faulty), actual >= 0.5, predicted)
+    iou = mask_iou(predicted, actual >= 0.5)
+
+    return {
+        "model_path": model_path,
+        "threshold": threshold,
+        "predicted": predicted,
+        "overlay": overlay,
+        "iou": iou,
+        "predicted_box": bounding_box(predicted),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Create one fresh random BEV mask, predict it, and save a PNG overlay."
+        description="Create one fresh random BEV mask and compare IoU-loss vs Tversky-loss predictions."
     )
     parser.add_argument("--bev", default=DEFAULT_BEV)
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
+    parser.add_argument("--iou-model-path", default=DEFAULT_IOU_MODEL_PATH)
+    parser.add_argument("--tversky-model-path", default=DEFAULT_TVERSKY_MODEL_PATH)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--threshold", type=float, default=None)
     parser.add_argument("--min-mask-height", type=int, default=25)
@@ -84,25 +119,48 @@ def main():
     faulty, actual, metadata = make_sample(clean, occupancy, sample_index=0, args=args)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, checkpoint = load_model(Path(args.model_path), device)
-    threshold = args.threshold if args.threshold is not None else checkpoint.get("threshold", 0.5)
-
-    predicted = predict_mask(model, device, faulty, threshold)
-    overlay = overlay_masks(make_input_preview(faulty), actual >= 0.5, predicted)
+    iou_result = predict_and_overlay(
+        Path(args.iou_model_path),
+        device,
+        faulty,
+        actual,
+        args.threshold,
+    )
+    tversky_result = predict_and_overlay(
+        Path(args.tversky_model_path),
+        device,
+        faulty,
+        actual,
+        args.threshold,
+    )
+    comparison = stack_comparison(iou_result["overlay"], tversky_result["overlay"])
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = output_dir / f"random_validation_{timestamp}_seed_{args.seed}.png"
-    write_image(output_path, overlay)
+    comparison_path = output_dir / f"random_validation_compare_{timestamp}_seed_{args.seed}.png"
+    iou_path = output_dir / f"random_validation_bce_iou_{timestamp}_seed_{args.seed}.png"
+    tversky_path = output_dir / f"random_validation_bce_tversky_{timestamp}_seed_{args.seed}.png"
 
-    print(f"Saved validation overlay: {output_path}")
+    write_image(comparison_path, comparison)
+    write_image(iou_path, iou_result["overlay"])
+    write_image(tversky_path, tversky_result["overlay"])
+
+    print(f"Saved comparison overlay: {comparison_path}")
+    print(f"Saved IoU-loss overlay: {iou_path}")
+    print(f"Saved Tversky-loss overlay: {tversky_path}")
     print(f"Seed: {args.seed}")
-    print(f"Threshold: {threshold:.3f}")
-    print(f"IoU: {mask_iou(predicted, actual >= 0.5):.4f}")
     print(f"Actual box: {bounding_box(actual >= 0.5)}")
-    print(f"Predicted box: {bounding_box(predicted)}")
+    print(f"IoU-loss model: {iou_result['model_path']}")
+    print(f"  threshold: {iou_result['threshold']:.3f}")
+    print(f"  mask IoU: {iou_result['iou']:.4f}")
+    print(f"  predicted box: {iou_result['predicted_box']}")
+    print(f"Tversky-loss model: {tversky_result['model_path']}")
+    print(f"  threshold: {tversky_result['threshold']:.3f}")
+    print(f"  mask IoU: {tversky_result['iou']:.4f}")
+    print(f"  predicted box: {tversky_result['predicted_box']}")
     print(f"Mask metadata: {metadata['mask']}")
+    print("Comparison image: left=BCE+IoU model, right=BCE+Tversky model")
     print("Overlay colors: red=actual mask, blue=predicted mask, magenta=overlap")
 
 
