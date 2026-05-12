@@ -15,8 +15,9 @@ DEFAULT_MATCH_INDEX = (
 )
 DEFAULT_CALIBRATION = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\Data"
-    r"\01_Day\Calibration\Continental_LiDAR.txt"
+    r"\Day_1_Parking\Calibration\Continental_LiDAR.txt"
 )
+DEFAULT_DATA_ROOT = r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\Data"
 
 
 def load_match(match_index: Path, match_row: int):
@@ -47,6 +48,26 @@ def load_lidar_to_radar_transform(calibration_path: Path):
                 return transform
 
     raise ValueError(f"Could not find Tr_lidar_to_radar in {calibration_path}")
+
+
+def resolve_existing_path(path: Path, data_root: Path) -> Path:
+    if path.exists():
+        return path
+
+    candidates = sorted(data_root.rglob(path.name), key=lambda candidate: len(candidate.parts))
+    if candidates:
+        return candidates[0]
+
+    raise FileNotFoundError(f"Could not find {path.name} under {data_root}")
+
+
+def find_scene_calibration(lidar_path: Path, fallback: Path) -> Path:
+    for parent in lidar_path.parents:
+        calibration = parent / "Calibration" / "Continental_LiDAR.txt"
+        if calibration.exists():
+            return calibration
+
+    return fallback
 
 
 def invert_transform(transform: np.ndarray) -> np.ndarray:
@@ -124,6 +145,11 @@ def main():
         help="Continental_LiDAR.txt calibration file.",
     )
     parser.add_argument(
+        "--data-root",
+        default=DEFAULT_DATA_ROOT,
+        help="Root folder used to resolve stale match paths after reorganizing data.",
+    )
+    parser.add_argument(
         "--lidar-voxel-size",
         type=float,
         default=0.15,
@@ -143,8 +169,9 @@ def main():
     args = parser.parse_args()
 
     match = load_match(Path(args.match_index), args.match_row)
-    lidar_path = Path(match["lidar_path"])
-    radar_path = Path(match["radar_path"])
+    data_root = Path(args.data_root)
+    lidar_path = resolve_existing_path(Path(match["lidar_path"]), data_root)
+    radar_path = resolve_existing_path(Path(match["radar_path"]), data_root)
 
     lidar_points = read_aeva_bin(lidar_path)
     radar_points = read_continental_bin(radar_path)
@@ -152,7 +179,8 @@ def main():
     lidar_xyz = lidar_points[:, :3]
     radar_xyz = radar_points[:, :3]
 
-    lidar_to_radar = load_lidar_to_radar_transform(Path(args.calibration))
+    calibration_path = find_scene_calibration(lidar_path, Path(args.calibration))
+    lidar_to_radar = load_lidar_to_radar_transform(calibration_path)
     radar_to_lidar = invert_transform(lidar_to_radar)
     radar_xyz_lidar_frame = transform_xyz(radar_xyz, radar_to_lidar)
 
@@ -164,6 +192,7 @@ def main():
     print(f"Radar points: {len(radar_xyz)}")
     print(f"LiDAR path: {lidar_path}")
     print(f"Radar path: {radar_path}")
+    print(f"Calibration path: {calibration_path}")
     print(f"Radar XYZ in LiDAR frame min: {np.min(radar_xyz_lidar_frame, axis=0)}")
     print(f"Radar XYZ in LiDAR frame max: {np.max(radar_xyz_lidar_frame, axis=0)}")
 
