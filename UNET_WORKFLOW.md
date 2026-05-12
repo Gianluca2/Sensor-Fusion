@@ -70,6 +70,24 @@ C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_predictions\
 
 By default, `predict_unet.py` writes 10 predicted-vs-actual overlay images.
 
+## Visual Random Validation
+
+Run:
+
+```powershell
+validate_unet_random.py
+```
+
+Each run creates a new random mask on the clean BEV, predicts the mask with the
+saved U-Net model, and writes one PNG overlay to:
+
+```text
+C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_random_validation\
+```
+
+Use this for visual inspection after training. Leave `--seed` unset if you want a
+different mask every run.
+
 Overlay colors:
 
 - red = actual injected mask
