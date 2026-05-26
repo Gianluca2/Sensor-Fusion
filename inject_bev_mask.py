@@ -20,10 +20,9 @@ DEFAULT_OUTPUT_DIR = (
 MASKABLE_LAYERS = [
     "lidar_density",
     "lidar_height",
-    "radar_density",
-    "radar_velocity",
-    "radar_range_min",
-    "radar_rcs_max",
+    "lidar_occupied_voxel_count",
+    "lidar_height_spread",
+    "lidar_height_bin_occupancy_ratio",
 ]
 
 
@@ -117,7 +116,7 @@ def save_masked_npz(output_path: Path, arrays: dict, metadata: dict):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Inject a rectangular black mask into a LiDAR/radar BEV grid."
+        description="Inject a rectangular black mask into a LiDAR-only BEV grid."
     )
     parser.add_argument("--input", default=DEFAULT_INPUT, help="Input BEV .npz file.")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)

@@ -8,12 +8,10 @@ import numpy as np
 from bev_projection import (
     make_rgb_preview,
     project_lidar_bev,
-    project_radar_bev,
     save_bev,
     write_image,
 )
 from visualize_lidar import read_aeva_bin
-from visualize_radar import read_continental_bin
 
 
 DEFAULT_DATA_ROOT = r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\Data"
@@ -37,38 +35,18 @@ def find_aeva_dir(root: Path):
     return sorted(candidates, key=lambda path: len(path.parts))[0] if candidates else None
 
 
-def find_continental_dir(root: Path):
-    candidates = []
-    for path in root.rglob("*"):
-        if not path.is_dir() or not list(path.glob("*.bin")):
-            continue
-
-        lower_parts = [part.lower() for part in path.parts]
-        if "continentalobject" in lower_parts or "continental_object" in lower_parts:
-            continue
-        if path.name.lower() == "continental" or "continental" in lower_parts:
-            candidates.append(path)
-
-    return sorted(candidates, key=lambda path: len(path.parts))[0] if candidates else None
-
-
 def discover_scene_roots(data_root: Path):
     scenes = []
-    for calibration_path in data_root.rglob("Continental_LiDAR.txt"):
-        scene_root = calibration_path.parent.parent
+    for aeva_gt in data_root.rglob("Aeva_gt.txt"):
+        scene_root = aeva_gt.parent.parent
         aeva_dir = find_aeva_dir(scene_root)
-        radar_dir = find_continental_dir(scene_root)
-        aeva_gt = find_first_file(scene_root, "Aeva_gt.txt")
-        radar_gt = find_first_file(scene_root, "Continental_gt.txt")
 
-        if aeva_dir and radar_dir and aeva_gt and radar_gt:
+        if aeva_dir and aeva_gt:
             scenes.append({
                 "name": scene_root.name,
                 "root": scene_root,
                 "aeva_dir": aeva_dir,
-                "radar_dir": radar_dir,
                 "aeva_gt": aeva_gt,
-                "radar_gt": radar_gt,
             })
 
     unique = {}
@@ -181,38 +159,22 @@ def aggregate_lidar(lidar_frames, lidar_poses, start_index, scan_count):
     return np.vstack(aggregated), reference
 
 
-def aggregate_radar(lidar_frames, radar_frames, lidar_poses, radar_poses, start_index, scan_count):
-    reference = lidar_frames[start_index]
-    reference_pose = nearest_by_timestamp(reference["timestamp"], lidar_poses)
-    reference_to_world = pose_to_transform(reference_pose)
-    world_to_reference = invert_transform(reference_to_world)
-    aggregated = []
-    matched_radar = []
+def choose_start_indices(frame_count: int, scan_count: int, frames_per_scene: int):
+    max_start = frame_count - scan_count
+    if max_start < 0:
+        return []
 
-    for lidar_frame in lidar_frames[start_index:start_index + scan_count]:
-        radar_frame = nearest_by_timestamp(lidar_frame["timestamp"], radar_frames)
-        radar_pose = nearest_by_timestamp(radar_frame["timestamp"], radar_poses)
-        radar_to_world = pose_to_transform(radar_pose)
-        radar_to_reference = world_to_reference @ radar_to_world
+    requested = min(frames_per_scene, max_start + 1)
+    if requested <= 1:
+        return [0]
 
-        radar_points = read_continental_bin(radar_frame["path"])
-        radar_points_lidar = radar_points.copy()
-        radar_points_lidar[:, :3] = transform_xyz(radar_points[:, :3], radar_to_reference)
-        aggregated.append(radar_points_lidar.astype(np.float32))
-        matched_radar.append({
-            "timestamp": radar_frame["timestamp"],
-            "path": str(radar_frame["path"]),
-            "delta_ms": (radar_frame["timestamp"] - lidar_frame["timestamp"]) / 1_000_000.0,
-        })
-
-    return np.vstack(aggregated), matched_radar
+    indices = np.linspace(0, max_start, num=requested)
+    return sorted({int(round(index)) for index in indices})
 
 
 def build_scene_bevs(scene, args):
     lidar_frames = load_frames(scene["aeva_dir"])
-    radar_frames = load_frames(scene["radar_dir"])
     lidar_poses = load_poses(scene["aeva_gt"])
-    radar_poses = load_poses(scene["radar_gt"])
 
     if len(lidar_frames) < args.aggregate_scans:
         print(f"Skipping {scene['name']}: not enough LiDAR frames")
@@ -223,8 +185,15 @@ def build_scene_bevs(scene, args):
     x_range = (args.x_min, args.x_max)
     y_range = (args.y_min, args.y_max)
 
-    max_start = len(lidar_frames) - args.aggregate_scans
-    start_indices = range(0, max_start + 1, args.stride)
+    if args.evenly_spaced:
+        start_indices = choose_start_indices(
+            len(lidar_frames),
+            args.aggregate_scans,
+            args.frames_per_scene,
+        )
+    else:
+        max_start = len(lidar_frames) - args.aggregate_scans
+        start_indices = range(0, max_start + 1, args.stride)
     written = 0
 
     for start_index in start_indices:
@@ -237,18 +206,18 @@ def build_scene_bevs(scene, args):
             start_index,
             args.aggregate_scans,
         )
-        radar_points, matched_radar = aggregate_radar(
-            lidar_frames,
-            radar_frames,
-            lidar_poses,
-            radar_poses,
-            start_index,
-            args.aggregate_scans,
-        )
 
         bev_layers = {}
-        bev_layers.update(project_lidar_bev(lidar_xyz, x_range, y_range, args.resolution))
-        bev_layers.update(project_radar_bev(radar_points, x_range, y_range, args.resolution))
+        bev_layers.update(
+            project_lidar_bev(
+                lidar_xyz,
+                x_range,
+                y_range,
+                args.resolution,
+                z_range=(args.z_min, args.z_max),
+                z_resolution=args.z_resolution,
+            )
+        )
         rgb = make_rgb_preview(bev_layers)
 
         stem = f"{scene['name']}_bev_{written:06d}"
@@ -259,12 +228,14 @@ def build_scene_bevs(scene, args):
             "scene_root": str(scene["root"]),
             "reference_lidar_timestamp": reference["timestamp"],
             "reference_lidar_path": str(reference["path"]),
-            "matched_radar": matched_radar,
+            "sensor_mode": "lidar_only",
             "aggregate_scans": args.aggregate_scans,
             "aggregation": "t_to_t_plus_scans_minus_1_motion_compensated_to_reference_lidar",
             "x_range_m": list(x_range),
             "y_range_m": list(y_range),
             "resolution_m_per_cell": args.resolution,
+            "z_range_m": [args.z_min, args.z_max],
+            "z_resolution_m_per_voxel": args.z_resolution,
             "grid_shape": list(rgb.shape[:2]),
         }
 
@@ -278,18 +249,26 @@ def build_scene_bevs(scene, args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Build multi-scene, motion-compensated LiDAR/radar BEV files."
+        description="Build multi-scene, motion-compensated LiDAR-only BEV files."
     )
     parser.add_argument("--data-root", default=DEFAULT_DATA_ROOT)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--frames-per-scene", type=int, default=30)
     parser.add_argument("--stride", type=int, default=10)
+    parser.add_argument(
+        "--evenly-spaced",
+        action="store_true",
+        help="Sample --frames-per-scene start frames evenly across each scene timeline.",
+    )
     parser.add_argument("--aggregate-scans", type=int, default=3)
     parser.add_argument("--x-min", type=float, default=0.0)
     parser.add_argument("--x-max", type=float, default=80.0)
     parser.add_argument("--y-min", type=float, default=-40.0)
     parser.add_argument("--y-max", type=float, default=40.0)
     parser.add_argument("--resolution", type=float, default=0.2)
+    parser.add_argument("--z-min", type=float, default=-4.0)
+    parser.add_argument("--z-max", type=float, default=6.0)
+    parser.add_argument("--z-resolution", type=float, default=0.5)
     args = parser.parse_args()
 
     scenes = discover_scene_roots(Path(args.data_root))
@@ -312,15 +291,14 @@ def main():
         "aggregate_scans": args.aggregate_scans,
         "frames_per_scene": args.frames_per_scene,
         "stride": args.stride,
+        "evenly_spaced": args.evenly_spaced,
         "total_bev_files": total,
         "scenes": [
             {
                 "name": scene["name"],
                 "root": str(scene["root"]),
                 "aeva_dir": str(scene["aeva_dir"]),
-                "radar_dir": str(scene["radar_dir"]),
                 "aeva_gt": str(scene["aeva_gt"]),
-                "radar_gt": str(scene["radar_gt"]),
             }
             for scene in scenes
         ],

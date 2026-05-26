@@ -107,7 +107,7 @@ def show_image(rgb: np.ndarray, title: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Visualize original and masked LiDAR/radar BEV projections."
+        description="Visualize original and masked LiDAR-only BEV projections."
     )
     parser.add_argument("--bev", default=DEFAULT_BEV, help="Original BEV .npz file.")
     parser.add_argument(
@@ -141,7 +141,7 @@ def main():
     print(f"Masked BEV: {masked_path}")
     print(f"Comparison image: {comparison_path}")
     print(f"Grid shape: {original_rgb.shape[0]} rows x {original_rgb.shape[1]} cols")
-    print("Preview channels: red=radar density, green=LiDAR height, blue=LiDAR density")
+    print("Preview channels: red=LiDAR occupied voxel count, green=LiDAR height, blue=LiDAR density")
 
     mask_info = masked_metadata.get("mask")
     if mask_info:

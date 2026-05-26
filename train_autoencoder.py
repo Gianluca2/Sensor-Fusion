@@ -8,23 +8,23 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset, random_split
 
-from unet_model import SmallUNet
+from autoencoder_model import BEVAutoEncoder
 
 
 DEFAULT_DATASET_DIR = (
-    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_dataset"
+    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\autoencoder_dataset"
 )
 DEFAULT_MODEL_PATH = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\models"
-    r"\unet_bev_mask.pt"
+    r"\bev_autoencoder.pt"
 )
 DEFAULT_METRICS_PATH = (
     r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\models"
-    r"\unet_training_metrics.csv"
+    r"\autoencoder_training_metrics.csv"
 )
 
 
-class BEVMaskDataset(Dataset):
+class BEVReconstructionDataset(Dataset):
     def __init__(self, dataset_dir: Path):
         self.paths = sorted(dataset_dir.glob("sample_*.npz"))
         if not self.paths:
@@ -36,56 +36,45 @@ class BEVMaskDataset(Dataset):
     def __getitem__(self, index):
         with np.load(self.paths[index]) as data:
             x = data["input"].astype(np.float32)
-            y = data["target"].astype(np.float32)[None, :, :]
+            clean = data["clean"].astype(np.float32) if "clean" in data.files else x
+            mask = data["target"].astype(np.float32)[None, :, :]
 
-        return torch.from_numpy(x), torch.from_numpy(y)
-
-
-def dice_loss(logits, targets, smooth=1.0):
-    probs = torch.sigmoid(logits)
-    intersection = torch.sum(probs * targets, dim=(1, 2, 3))
-    union = torch.sum(probs, dim=(1, 2, 3)) + torch.sum(targets, dim=(1, 2, 3))
-    dice = (2.0 * intersection + smooth) / (union + smooth)
-    return 1.0 - dice.mean()
+        return torch.from_numpy(x), torch.from_numpy(clean), torch.from_numpy(mask)
 
 
-def iou_loss(logits, targets, smooth=1.0):
-    probs = torch.sigmoid(logits)
-    intersection = torch.sum(probs * targets, dim=(1, 2, 3))
-    union = torch.sum(probs + targets - probs * targets, dim=(1, 2, 3))
-    iou = (intersection + smooth) / (union + smooth)
-    return 1.0 - iou.mean()
-
-
-def tversky_loss(logits, targets, alpha=0.6, beta=0.6, smooth=1.0):
-    probs = torch.sigmoid(logits)
-    tp = torch.sum(probs * targets, dim=(1, 2, 3))
-    fp = torch.sum(probs * (1.0 - targets), dim=(1, 2, 3))
-    fn = torch.sum((1.0 - probs) * targets, dim=(1, 2, 3))
-    score = (tp + smooth) / (tp + alpha * fp + beta * fn + smooth)
-    return 1.0 - score.mean()
-
-
-def segmentation_loss(logits, targets, loss_name: str, tversky_alpha: float, tversky_beta: float):
-    bce = nn.BCEWithLogitsLoss()
-
-    if loss_name == "bce_dice":
-        return bce(logits, targets) + dice_loss(logits, targets)
-    if loss_name == "bce_iou":
-        return bce(logits, targets) + iou_loss(logits, targets)
-    if loss_name == "bce_tversky":
-        return bce(logits, targets) + tversky_loss(
-            logits,
-            targets,
-            alpha=tversky_alpha,
-            beta=tversky_beta,
+def reconstruction_loss(reconstruction, clean, loss_name: str):
+    if loss_name == "l1":
+        return nn.functional.l1_loss(reconstruction, clean)
+    if loss_name == "mse":
+        return nn.functional.mse_loss(reconstruction, clean)
+    if loss_name == "l1_mse":
+        return nn.functional.l1_loss(reconstruction, clean) + 0.5 * nn.functional.mse_loss(
+            reconstruction,
+            clean,
         )
-
     raise ValueError(f"Unsupported loss: {loss_name}")
 
 
-def mask_metrics(logits, targets, threshold: float):
-    preds = torch.sigmoid(logits) >= threshold
+def error_maps(reconstruction, corrupted):
+    return torch.mean(torch.abs(reconstruction - corrupted), dim=1, keepdim=True)
+
+
+def predict_from_error(error, error_threshold: float | None, error_percentile: float):
+    if error_threshold is not None:
+        return error >= error_threshold
+
+    flat = error.flatten(start_dim=1)
+    keep_fraction = max(0.0, min(1.0, (100.0 - error_percentile) / 100.0))
+    keep_cells = max(1, int(flat.shape[1] * keep_fraction))
+    top_indices = torch.topk(flat, keep_cells, dim=1).indices
+    predicted = torch.zeros_like(flat, dtype=torch.bool)
+    predicted.scatter_(1, top_indices, True)
+    return predicted.reshape_as(error)
+
+
+def mask_metrics(reconstruction, corrupted, targets, error_threshold, error_percentile):
+    error = error_maps(reconstruction, corrupted)
+    preds = predict_from_error(error, error_threshold, error_percentile)
     targets_bool = targets >= 0.5
 
     tp = torch.logical_and(preds, targets_bool).sum(dim=(1, 2, 3)).float()
@@ -108,10 +97,11 @@ def mask_metrics(logits, targets, threshold: float):
         "f1": f1.mean().item(),
         "false_positive_cells": fp.mean().item(),
         "false_negative_cells": fn.mean().item(),
+        "mean_error": error.mean().item(),
     }
 
 
-def run_epoch(model, loader, optimizer, device, threshold, args):
+def run_epoch(model, loader, optimizer, device, args):
     training = optimizer is not None
     model.train(training)
 
@@ -123,31 +113,34 @@ def run_epoch(model, loader, optimizer, device, threshold, args):
         "f1": 0.0,
         "false_positive_cells": 0.0,
         "false_negative_cells": 0.0,
+        "mean_error": 0.0,
     }
     count = 0
 
-    for x, y in loader:
+    for x, clean, mask in loader:
         x = x.to(device)
-        y = y.to(device)
+        clean = clean.to(device)
+        mask = mask.to(device)
 
         with torch.set_grad_enabled(training):
-            logits = model(x)
-            loss = segmentation_loss(
-                logits,
-                y,
-                loss_name=args.loss,
-                tversky_alpha=args.tversky_alpha,
-                tversky_beta=args.tversky_beta,
-            )
+            reconstruction = model(x)
+            loss = reconstruction_loss(reconstruction, clean, args.loss)
 
             if training:
                 optimizer.zero_grad()
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
                 optimizer.step()
 
         batch_size = x.shape[0]
         total_loss += loss.item() * batch_size
-        metrics = mask_metrics(logits.detach(), y, threshold)
+        metrics = mask_metrics(
+            reconstruction.detach(),
+            x,
+            mask,
+            args.error_threshold,
+            args.error_percentile,
+        )
         for key in totals:
             totals[key] += metrics[key] * batch_size
         count += batch_size
@@ -171,6 +164,7 @@ def write_metrics_header(path: Path):
             "f1",
             "false_positive_cells",
             "false_negative_cells",
+            "mean_error",
         ])
         writer.writeheader()
 
@@ -188,6 +182,7 @@ def append_metrics(path: Path, epoch: int, split: str, loss_name: str, metrics: 
             "f1",
             "false_positive_cells",
             "false_negative_cells",
+            "mean_error",
         ])
         row = {
             "epoch": epoch,
@@ -199,24 +194,35 @@ def append_metrics(path: Path, epoch: int, split: str, loss_name: str, metrics: 
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train a small U-Net to detect BEV black masks.")
+    parser = argparse.ArgumentParser(
+        description="Train a BEV autoencoder to reconstruct masked LiDAR BEV tensors."
+    )
     parser.add_argument("--dataset-dir", default=DEFAULT_DATASET_DIR)
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--metrics-path", default=DEFAULT_METRICS_PATH)
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--grad-clip", type=float, default=1.0)
     parser.add_argument("--base-channels", type=int, default=16)
+    parser.add_argument("--dropout", type=float, default=0.10)
+    parser.add_argument("--depth", type=int, default=4)
     parser.add_argument("--val-fraction", type=float, default=0.2)
-    parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument("--loss", choices=["l1", "mse", "l1_mse"], default="l1_mse")
     parser.add_argument(
-        "--loss",
-        choices=["bce_dice", "bce_iou", "bce_tversky"],
-        default="bce_dice",
+        "--error-threshold",
+        type=float,
+        default=None,
+        help="Absolute reconstruction-error threshold. If omitted, percentile thresholding is used.",
     )
-    parser.add_argument("--tversky-alpha", type=float, default=0.6)
-    parser.add_argument("--tversky-beta", type=float, default=0.6)
+    parser.add_argument(
+        "--error-percentile",
+        type=float,
+        default=98.0,
+        help="Per-sample reconstruction-error percentile used to create the predicted fault mask.",
+    )
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -224,7 +230,7 @@ def main():
     torch.manual_seed(args.seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dataset = BEVMaskDataset(Path(args.dataset_dir))
+    dataset = BEVReconstructionDataset(Path(args.dataset_dir))
 
     val_size = max(1, int(len(dataset) * args.val_fraction))
     train_size = len(dataset) - val_size
@@ -237,11 +243,26 @@ def main():
     train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False)
 
-    first_x, _ = dataset[0]
-    model = SmallUNet(in_channels=first_x.shape[0], base_channels=args.base_channels).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    first_x, _, _ = dataset[0]
+    model = BEVAutoEncoder(
+        in_channels=first_x.shape[0],
+        base_channels=args.base_channels,
+        dropout=args.dropout,
+        depth=args.depth,
+    ).to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="min",
+        factor=0.5,
+        patience=5,
+    )
 
-    best_iou = -1.0
+    best_val_loss = float("inf")
     model_path = Path(args.model_path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path = Path(args.metrics_path)
@@ -251,10 +272,12 @@ def main():
     print(f"Train samples: {train_size}")
     print(f"Val samples: {val_size}")
     print(f"Loss: {args.loss}")
+    print(f"Error percentile: {args.error_percentile:.2f}")
 
     for epoch in range(1, args.epochs + 1):
-        train_metrics = run_epoch(model, train_loader, optimizer, device, args.threshold, args)
-        val_metrics = run_epoch(model, val_loader, None, device, args.threshold, args)
+        train_metrics = run_epoch(model, train_loader, optimizer, device, args)
+        val_metrics = run_epoch(model, val_loader, None, device, args)
+        scheduler.step(val_metrics["loss"])
         append_metrics(metrics_path, epoch, "train", args.loss, train_metrics)
         append_metrics(metrics_path, epoch, "val", args.loss, val_metrics)
 
@@ -265,22 +288,25 @@ def main():
             f"val loss {val_metrics['loss']:.4f} "
             f"iou {val_metrics['iou']:.4f} f1 {val_metrics['f1']:.4f} "
             f"fp {val_metrics['false_positive_cells']:.1f} "
-            f"fn {val_metrics['false_negative_cells']:.1f}"
+            f"fn {val_metrics['false_negative_cells']:.1f} "
+            f"lr {optimizer.param_groups[0]['lr']:.2e}"
         )
 
-        if val_metrics["iou"] > best_iou:
-            best_iou = val_metrics["iou"]
+        if val_metrics["loss"] < best_val_loss:
+            best_val_loss = val_metrics["loss"]
             torch.save({
                 "model_state": model.state_dict(),
                 "in_channels": first_x.shape[0],
                 "base_channels": args.base_channels,
-                "threshold": args.threshold,
+                "dropout": args.dropout,
+                "depth": args.depth,
                 "loss": args.loss,
-                "tversky_alpha": args.tversky_alpha,
-                "tversky_beta": args.tversky_beta,
+                "error_threshold": args.error_threshold,
+                "error_percentile": args.error_percentile,
+                "model_type": "bev_autoencoder",
             }, model_path)
 
-    print(f"Best val IoU: {best_iou:.4f}")
+    print(f"Best val reconstruction loss: {best_val_loss:.4f}")
     print(f"Saved model: {model_path}")
     print(f"Wrote metrics: {metrics_path}")
 

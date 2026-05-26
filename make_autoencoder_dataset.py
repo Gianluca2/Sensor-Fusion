@@ -11,20 +11,17 @@ DEFAULT_BEV = (
     r"\bev\bev_match_000000.npz"
 )
 DEFAULT_OUTPUT_DIR = (
-    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\unet_dataset"
-)
-DEFAULT_BEV_DIR = (
-    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\bev_multi"
+    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\autoencoder_dataset"
 )
 DEFAULT_LAYERS = [
     "lidar_density",
     "lidar_height",
-    "radar_density",
-    "radar_velocity",
-    "radar_range_min",
-    "radar_rcs_max",
+    "lidar_occupied_voxel_count",
+    "lidar_height_spread",
+    "lidar_height_bin_occupancy_ratio",
 ]
-OCCUPANCY_LAYER_INDICES = [0, 1, 2]
+OCCUPANCY_LAYER_INDICES = [0, 1, 2, 3, 4]
+MASKED_LAYER_INDICES = [0, 1, 2, 3, 4]
 
 
 def load_clean_bev(path: Path, layers):
@@ -107,7 +104,7 @@ def make_sample(clean: np.ndarray, occupancy: np.ndarray, sample_index: int, arg
     )
 
     faulty = np.array(clean, copy=True)
-    faulty[:, row_start:row_end, col_start:col_end] = 0.0
+    faulty[MASKED_LAYER_INDICES, row_start:row_end, col_start:col_end] = 0.0
 
     target = np.zeros((height, width), dtype=np.float32)
     target[row_start:row_end, col_start:col_end] = 1.0
@@ -128,9 +125,18 @@ def make_sample(clean: np.ndarray, occupancy: np.ndarray, sample_index: int, arg
     return faulty, target, metadata
 
 
+def clear_existing_samples(output_dir: Path):
+    removed = 0
+    for path in output_dir.glob("sample_*.npz"):
+        path.unlink()
+        removed += 1
+
+    return removed
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Create synthetic BEV mask samples for U-Net training."
+        description="Create synthetic masked BEV samples for autoencoder reconstruction training."
     )
     parser.add_argument("--bev", default=DEFAULT_BEV)
     parser.add_argument(
@@ -145,36 +151,11 @@ def main():
     parser.add_argument("--max-mask-height", type=int, default=90)
     parser.add_argument("--min-mask-width", type=int, default=25)
     parser.add_argument("--max-mask-width", type=int, default=90)
-    parser.add_argument(
-        "--min-mask-area-fraction",
-        type=float,
-        default=0.01,
-        help="Minimum mask area as a fraction of the full BEV image area.",
-    )
-    parser.add_argument(
-        "--max-mask-area-fraction",
-        type=float,
-        default=0.03,
-        help="Maximum mask area as a fraction of the full BEV image area.",
-    )
-    parser.add_argument(
-        "--min-mask-occupied-cells",
-        type=int,
-        default=50,
-        help="Minimum occupied BEV cells required inside a sampled mask rectangle.",
-    )
-    parser.add_argument(
-        "--occupancy-threshold",
-        type=float,
-        default=0.0,
-        help="A BEV cell is occupied if any occupancy layer is greater than this value.",
-    )
-    parser.add_argument(
-        "--max-mask-attempts",
-        type=int,
-        default=500,
-        help="Maximum random rectangles to try per training sample.",
-    )
+    parser.add_argument("--min-mask-area-fraction", type=float, default=0.01)
+    parser.add_argument("--max-mask-area-fraction", type=float, default=0.03)
+    parser.add_argument("--min-mask-occupied-cells", type=int, default=50)
+    parser.add_argument("--occupancy-threshold", type=float, default=0.0)
+    parser.add_argument("--max-mask-attempts", type=int, default=500)
     args = parser.parse_args()
 
     random.seed(args.seed)
@@ -182,6 +163,9 @@ def main():
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    removed_samples = clear_existing_samples(output_dir)
+    if removed_samples:
+        print(f"Removed {removed_samples} stale sample files from {output_dir}")
 
     if args.bev_dir is not None:
         bev_files = find_bev_files(Path(args.bev_dir))
@@ -197,6 +181,7 @@ def main():
         "num_samples": args.num_samples,
         "layers": DEFAULT_LAYERS,
         "occupancy_layers": [DEFAULT_LAYERS[index] for index in OCCUPANCY_LAYER_INDICES],
+        "masked_layers": [DEFAULT_LAYERS[index] for index in MASKED_LAYER_INDICES],
         "min_mask_occupied_cells": args.min_mask_occupied_cells,
         "min_mask_area_fraction": args.min_mask_area_fraction,
         "max_mask_area_fraction": args.max_mask_area_fraction,
@@ -215,6 +200,7 @@ def main():
         np.savez_compressed(
             sample_path,
             input=faulty.astype(np.float32),
+            clean=clean.astype(np.float32),
             target=target.astype(np.float32),
             metadata_json=json.dumps(sample_metadata, indent=2),
         )
