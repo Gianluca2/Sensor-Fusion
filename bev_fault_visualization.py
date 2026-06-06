@@ -41,9 +41,6 @@ def overlay_masks(rgb: np.ndarray, actual: np.ndarray, predicted: np.ndarray) ->
 
     output[actual_only] = [255, 0, 0]
     output[predicted_only] = [0, 0, 255]
-
-    output = draw_box(output, bounding_box(actual_bool), [255, 0, 0])
-    output = draw_box(output, bounding_box(predicted_bool), [0, 0, 255])
     output[overlap] = [255, 0, 255]
     return output
 
