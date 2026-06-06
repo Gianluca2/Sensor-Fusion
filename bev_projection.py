@@ -1,10 +1,9 @@
 from pathlib import Path
 import argparse
 import json
+import struct
 
 import numpy as np
-
-from visualize_lidar import read_aeva_bin
 
 
 DEFAULT_OUTPUT_DIR = (
@@ -17,6 +16,29 @@ DEFAULT_LIDAR_BIN = (
 DEFAULT_Z_MIN = -4.0
 DEFAULT_Z_MAX = 6.0
 DEFAULT_Z_RESOLUTION = 0.5
+AEVA_RECORD_SIZE_BYTES = 29
+
+
+def read_aeva_bin(path: Path) -> np.ndarray:
+    points = []
+    with open(path, "rb") as file:
+        while True:
+            data = file.read(AEVA_RECORD_SIZE_BYTES)
+            if len(data) == 0:
+                break
+            if len(data) != AEVA_RECORD_SIZE_BYTES:
+                raise ValueError(
+                    f"Incomplete Aeva record in {path}: "
+                    f"expected {AEVA_RECORD_SIZE_BYTES} bytes, got {len(data)}"
+                )
+
+            x, y, z, reflectivity, velocity = struct.unpack("fffff", data[:20])
+            time_offset_ns = struct.unpack("I", data[20:24])[0]
+            line_index = struct.unpack("B", data[24:25])[0]
+            intensity = struct.unpack("f", data[25:29])[0]
+            points.append([x, y, z, reflectivity, velocity, time_offset_ns, line_index, intensity])
+
+    return np.asarray(points, dtype=np.float32)
 
 
 def metric_to_grid(xyz: np.ndarray, x_range, y_range, resolution: float):
