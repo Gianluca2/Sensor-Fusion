@@ -28,6 +28,8 @@ Core Model V2 scripts:
 model_v2\Model_V2.py
 model_v2\train_model_v2.py
 model_v2\rewrite_model_v2_samples.py
+model_v2\run_model_v2_4090.sh
+model_v2\run_model_v2_4090_quick.sh
 model_v2\predict_model_v2_reconstruction_error.py
 model_v2\predict_model_v2.py
 ```
@@ -132,6 +134,47 @@ python3 model_v2/train_model_v2.py \
   --dataset-dir /mnt/3D10B36523559581/Gianluca/model_v2_outputs/model_v2_dataset \
   --model-path /mnt/3D10B36523559581/Gianluca/model_v2_outputs/models/model_v2.pt \
   --metrics-path /mnt/3D10B36523559581/Gianluca/model_v2_outputs/models/model_v2_training_metrics.csv
+```
+
+## RTX 4090 Machine Launchers
+
+For the Linux RTX 4090 machine, the repository includes ready-to-run launchers.
+
+Quick smoke test:
+
+```bash
+cd /mnt/3D10B36523559581/Gianluca/Sensor-Fusion
+bash model_v2/run_model_v2_4090_quick.sh
+```
+
+Full run:
+
+```bash
+cd /mnt/3D10B36523559581/Gianluca/Sensor-Fusion
+bash model_v2/run_model_v2_4090.sh
+```
+
+Default full-run settings:
+
+```text
+data root = /mnt/3D10B36523559581/Gianluca/HeRCULES
+output root = /mnt/3D10B36523559581/Gianluca/model_v2_outputs
+sample generation workers = 12
+training batch size = 8
+training DataLoader workers = 8
+epochs = 100
+```
+
+You can override settings without editing the script:
+
+```bash
+BATCH_SIZE=16 EPOCHS=200 SAMPLE_WORKERS=16 bash model_v2/run_model_v2_4090.sh
+```
+
+If the BEV pool has already been created and you only want to rewrite fault samples and retrain:
+
+```bash
+REWRITE_BEV=0 bash model_v2/run_model_v2_4090.sh
 ```
 
 ## Train Model V2
