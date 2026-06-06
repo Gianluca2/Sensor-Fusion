@@ -5,7 +5,7 @@ set -euo pipefail
 # It caps BEV generation to 20 frames per scene and trains for 2 epochs.
 
 export REPO_DIR="${REPO_DIR:-/mnt/3D10B36523559581/Gianluca/Sensor-Fusion}"
-export DATA_ROOT="${DATA_ROOT:-/mnt/3D10B36523559581/Gianluca/HeRCULES}"
+export DATA_ROOT="${DATA_ROOT:-/mnt/3D10B36523559581/HeRCULES}"
 export OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/3D10B36523559581/Gianluca/model_v2_outputs_quick}"
 export SAMPLE_WORKERS="${SAMPLE_WORKERS:-4}"
 export LOADER_WORKERS="${LOADER_WORKERS:-4}"

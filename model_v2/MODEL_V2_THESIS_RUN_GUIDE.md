@@ -96,7 +96,7 @@ Example using your shown HeRCULES folder:
 ```bash
 cd /mnt/3D10B36523559581/Gianluca/Sensor-Fusion
 python3 model_v2/rewrite_model_v2_samples.py \
-  --data-root /mnt/3D10B36523559581/Gianluca/HeRCULES \
+  --data-root /mnt/3D10B36523559581/HeRCULES \
   --bev-dir /mnt/3D10B36523559581/Gianluca/model_v2_outputs/bev_all_frames \
   --dataset-dir /mnt/3D10B36523559581/Gianluca/model_v2_outputs/model_v2_dataset \
   --rewrite-bev \
@@ -122,7 +122,7 @@ For a quick test, cap the BEV frames per scene:
 
 ```bash
 python3 model_v2/rewrite_model_v2_samples.py \
-  --data-root /mnt/3D10B36523559581/Gianluca/HeRCULES \
+  --data-root /mnt/3D10B36523559581/HeRCULES \
   --frames-per-scene-cap 20 \
   --num-workers 2
 ```
@@ -157,7 +157,7 @@ bash model_v2/run_model_v2_4090.sh
 Default full-run settings:
 
 ```text
-data root = /mnt/3D10B36523559581/Gianluca/HeRCULES
+data root = /mnt/3D10B36523559581/HeRCULES
 output root = /mnt/3D10B36523559581/Gianluca/model_v2_outputs
 sample generation workers = 12
 training batch size = 8

@@ -6,7 +6,7 @@ set -euo pipefail
 #   bash model_v2/run_model_v2_4090.sh
 
 REPO_DIR="${REPO_DIR:-/mnt/3D10B36523559581/Gianluca/Sensor-Fusion}"
-DATA_ROOT="${DATA_ROOT:-/mnt/3D10B36523559581/Gianluca/HeRCULES}"
+DATA_ROOT="${DATA_ROOT:-/mnt/3D10B36523559581/HeRCULES}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-/mnt/3D10B36523559581/Gianluca/model_v2_outputs}"
 
 BEV_DIR="${BEV_DIR:-$OUTPUT_ROOT/bev_all_frames}"
