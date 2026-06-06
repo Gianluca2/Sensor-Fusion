@@ -111,6 +111,36 @@ It saves training metrics to:
 C:\Users\gianl\ThesisOutputs\HerculesFiles\outputs\models\model_v2_training_metrics.csv
 ```
 
+The metrics CSV tracks both training and validation rows for every epoch. Important columns include:
+
+```text
+loss
+reconstruction_loss
+learning_rate
+iou
+precision
+recall
+f1
+f2
+mean_error
+```
+
+The learning rate is adaptive. `train_model_v2.py` uses `ReduceLROnPlateau`, which monitors validation loss and reduces the learning rate when validation loss stalls.
+
+Default adaptive learning-rate settings:
+
+```text
+initial lr = 1e-3
+lr reduce patience = 2 epochs
+lr reduce factor = 0.5
+```
+
+You can override them:
+
+```powershell
+.\.venv311\Scripts\python.exe model_v2\train_model_v2.py --lr 0.001 --lr-reduce-patience 3 --lr-reduce-factor 0.5
+```
+
 ## Visualize Model V2
 
 For the current conditioned reconstruction-error Model V2, run:

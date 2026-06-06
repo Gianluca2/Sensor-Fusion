@@ -140,6 +140,7 @@ def mask_metric_values(error_map, targets, threshold: float):
 METRIC_FIELDS = [
     "loss",
     "reconstruction_loss",
+    "learning_rate",
     "iou",
     "precision",
     "recall",
@@ -187,7 +188,9 @@ def run_epoch(model, loader, optimizer, device, args, weights):
             totals[key] += values.mean().item() * batch_size
         count += batch_size
 
-    return {key: value / count for key, value in totals.items()}
+    metrics = {key: value / count for key, value in totals.items()}
+    metrics["learning_rate"] = 0.0
+    return metrics
 
 
 def write_metrics_header(path: Path):
@@ -197,11 +200,12 @@ def write_metrics_header(path: Path):
         writer.writeheader()
 
 
-def append_metrics(path: Path, epoch: int, split: str, metrics: dict):
+def append_metrics(path: Path, epoch: int, split: str, metrics: dict, learning_rate: float):
     with open(path, "a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["epoch", "split"] + METRIC_FIELDS)
         row = {"epoch": epoch, "split": split}
         row.update({key: f"{metrics[key]:.6f}" for key in METRIC_FIELDS})
+        row["learning_rate"] = f"{learning_rate:.10f}"
         writer.writerow(row)
 
 
@@ -316,13 +320,19 @@ def main():
         "Reconstruction weighting: "
         f"clean_area={args.clean_area_weight}, fault_area={args.fault_area_weight}"
     )
+    print(
+        "Adaptive LR: ReduceLROnPlateau monitors validation loss, "
+        f"patience={args.lr_reduce_patience}, factor={args.lr_reduce_factor}"
+    )
 
     for epoch in range(1, args.epochs + 1):
         train_metrics = run_epoch(model, train_loader, optimizer, device, args, weights)
         val_metrics = run_epoch(model, val_loader, None, device, args, weights)
+        previous_lr = optimizer.param_groups[0]["lr"]
         scheduler.step(val_metrics["loss"])
-        append_metrics(metrics_path, epoch, "train", train_metrics)
-        append_metrics(metrics_path, epoch, "val", val_metrics)
+        current_lr = optimizer.param_groups[0]["lr"]
+        append_metrics(metrics_path, epoch, "train", train_metrics, current_lr)
+        append_metrics(metrics_path, epoch, "val", val_metrics, current_lr)
 
         print(
             f"Epoch {epoch:03d} | "
@@ -338,6 +348,8 @@ def main():
             f"mean_err {val_metrics['mean_error']:.4f} "
             f"lr {optimizer.param_groups[0]['lr']:.2e}"
         )
+        if current_lr < previous_lr:
+            print(f"Learning rate reduced: {previous_lr:.2e} -> {current_lr:.2e}")
 
         if val_metrics["loss"] < best_val_loss - args.min_delta:
             best_val_loss = val_metrics["loss"]
@@ -374,7 +386,7 @@ def main():
             checkpoint = torch.load(model_path, map_location=device)
         model.load_state_dict(checkpoint["model_state"])
         test_metrics = run_epoch(model, test_loader, None, device, args, weights)
-        append_metrics(metrics_path, best_epoch, "test", test_metrics)
+        append_metrics(metrics_path, best_epoch, "test", test_metrics, optimizer.param_groups[0]["lr"])
         print(
             f"Test | loss {test_metrics['loss']:.4f} "
             f"recon {test_metrics['reconstruction_loss']:.4f} "
