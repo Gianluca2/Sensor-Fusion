@@ -9,6 +9,10 @@ from torch import nn
 from torch.nn import functional as F
 from PIL import Image, ImageDraw
 
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
 from bev_fault_visualization import (
     bounding_box,
     make_input_preview,

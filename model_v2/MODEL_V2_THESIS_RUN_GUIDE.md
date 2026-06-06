@@ -25,10 +25,10 @@ The resulting reconstruction-error map is thresholded to create the predicted fa
 Core Model V2 scripts:
 
 ```text
-Model_V2.py
-train_model_v2.py
-predict_model_v2_reconstruction_error.py
-predict_model_v2.py
+model_v2\Model_V2.py
+model_v2\train_model_v2.py
+model_v2\predict_model_v2_reconstruction_error.py
+model_v2\predict_model_v2.py
 ```
 
 Shared helper scripts:
@@ -90,7 +90,7 @@ Run:
 
 ```powershell
 cd "C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\MaskingTest"
-.\.venv311\Scripts\python.exe train_model_v2.py
+.\.venv311\Scripts\python.exe model_v2\train_model_v2.py
 ```
 
 The default training script reads existing samples from:
@@ -117,7 +117,7 @@ For the current conditioned reconstruction-error Model V2, run:
 
 ```powershell
 cd "C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\MaskingTest"
-.\.venv311\Scripts\python.exe predict_model_v2_reconstruction_error.py
+.\.venv311\Scripts\python.exe model_v2\predict_model_v2_reconstruction_error.py
 ```
 
 Output folder:
@@ -152,7 +152,7 @@ It automatically detects whether the checkpoint is the newer conditioned reconst
 Run:
 
 ```powershell
-.\.venv311\Scripts\python.exe predict_model_v2.py
+.\.venv311\Scripts\python.exe model_v2\predict_model_v2.py
 ```
 
 ## Important Interpretation
