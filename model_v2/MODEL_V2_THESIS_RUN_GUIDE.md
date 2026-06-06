@@ -28,6 +28,7 @@ Core Model V2 scripts:
 model_v2\Model_V2.py
 model_v2\train_model_v2.py
 model_v2\rewrite_model_v2_samples.py
+model_v2\run_model_v2_4090.py
 model_v2\run_model_v2_4090.sh
 model_v2\run_model_v2_4090_quick.sh
 model_v2\predict_model_v2_reconstruction_error.py
@@ -140,17 +141,23 @@ python3 model_v2/train_model_v2.py \
 
 For the Linux RTX 4090 machine, the repository includes ready-to-run launchers.
 
+Recommended Python launcher:
+
+```bash
+cd /mnt/3D10B36523559581/Gianluca/Sensor-Fusion
+python3 model_v2/run_model_v2_4090.py
+```
+
 Quick smoke test:
 
 ```bash
 cd /mnt/3D10B36523559581/Gianluca/Sensor-Fusion
-bash model_v2/run_model_v2_4090_quick.sh
+python3 model_v2/run_model_v2_4090.py --quick
 ```
 
-Full run:
+Optional shell launcher:
 
 ```bash
-cd /mnt/3D10B36523559581/Gianluca/Sensor-Fusion
 bash model_v2/run_model_v2_4090.sh
 ```
 
@@ -165,16 +172,16 @@ training DataLoader workers = 8
 epochs = 100
 ```
 
-You can override settings without editing the script:
+You can override Python launcher settings without editing the script:
 
 ```bash
-BATCH_SIZE=16 EPOCHS=200 SAMPLE_WORKERS=16 bash model_v2/run_model_v2_4090.sh
+python3 model_v2/run_model_v2_4090.py --batch-size 16 --epochs 200 --sample-workers 16
 ```
 
 If the BEV pool has already been created and you only want to rewrite fault samples and retrain:
 
 ```bash
-REWRITE_BEV=0 bash model_v2/run_model_v2_4090.sh
+python3 model_v2/run_model_v2_4090.py --reuse-bev
 ```
 
 ## Train Model V2
