@@ -31,6 +31,9 @@ model_v2\rewrite_model_v2_samples.py
 model_v2\run_model_v2_4090.py
 model_v2\run_model_v2_4090.sh
 model_v2\run_model_v2_4090_quick.sh
+model_v2\setup_model_v2_env.sh
+model_v2\requirements_model_v2.txt
+model_v2\SETUP_MODEL_V2_ENV.md
 model_v2\predict_model_v2_reconstruction_error.py
 model_v2\predict_model_v2.py
 ```
@@ -86,6 +89,19 @@ Quick CUDA check:
 ```powershell
 cd "C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\MaskingTest"
 .\.venv311\Scripts\python.exe -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO CUDA')"
+```
+
+On the Linux RTX 4090 machine, set up dependencies with:
+
+```bash
+cd /mnt/3D10B36523559581/Gianluca/Sensor-Fusion
+bash model_v2/setup_model_v2_env.sh
+```
+
+Then select this interpreter in VS Code:
+
+```text
+/mnt/3D10B36523559581/Gianluca/Sensor-Fusion/.venv_model_v2/bin/python
 ```
 
 ## Rewrite Samples From The Full HeRCULES Dataset
