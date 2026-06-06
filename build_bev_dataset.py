@@ -2,6 +2,7 @@ from pathlib import Path
 import argparse
 import bisect
 import json
+import struct
 
 import numpy as np
 
@@ -11,11 +12,33 @@ from bev_projection import (
     save_bev,
     write_image,
 )
-from visualize_lidar import read_aeva_bin
 
 
 DEFAULT_DATA_ROOT = r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\Data"
-DEFAULT_OUTPUT_DIR = r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\bev_multi"
+DEFAULT_OUTPUT_DIR = r"C:\Users\gianl\ThesisOutputs\HerculesFiles\outputs\bev_multi"
+AEVA_RECORD_SIZE_BYTES = 29
+
+
+def read_aeva_bin(path: Path) -> np.ndarray:
+    points = []
+    with open(path, "rb") as file:
+        while True:
+            data = file.read(AEVA_RECORD_SIZE_BYTES)
+            if len(data) == 0:
+                break
+            if len(data) != AEVA_RECORD_SIZE_BYTES:
+                raise ValueError(
+                    f"Incomplete Aeva record in {path}: "
+                    f"expected {AEVA_RECORD_SIZE_BYTES} bytes, got {len(data)}"
+                )
+
+            x, y, z, reflectivity, velocity = struct.unpack("fffff", data[:20])
+            time_offset_ns = struct.unpack("I", data[20:24])[0]
+            line_index = struct.unpack("B", data[24:25])[0]
+            intensity = struct.unpack("f", data[25:29])[0]
+            points.append([x, y, z, reflectivity, velocity, time_offset_ns, line_index, intensity])
+
+    return np.asarray(points, dtype=np.float32)
 
 
 def timestamp_from_path(path: Path) -> int:
@@ -148,6 +171,7 @@ def aggregate_lidar(lidar_frames, lidar_poses, start_index, scan_count):
     reference_to_world = pose_to_transform(reference_pose)
     world_to_reference = invert_transform(reference_to_world)
     aggregated = []
+    frame_metadata = []
 
     for frame in lidar_frames[start_index:start_index + scan_count]:
         pose = nearest_by_timestamp(frame["timestamp"], lidar_poses)
@@ -155,8 +179,13 @@ def aggregate_lidar(lidar_frames, lidar_poses, start_index, scan_count):
         sensor_to_reference = world_to_reference @ sensor_to_world
         points = read_aeva_bin(frame["path"])[:, :3]
         aggregated.append(transform_xyz(points, sensor_to_reference).astype(np.float32))
+        frame_metadata.append({
+            "timestamp": frame["timestamp"],
+            "path": str(frame["path"]),
+            "delta_ms_from_reference": (frame["timestamp"] - reference["timestamp"]) / 1_000_000.0,
+        })
 
-    return np.vstack(aggregated), reference
+    return np.vstack(aggregated), reference, frame_metadata
 
 
 def choose_start_indices(frame_count: int, scan_count: int, frames_per_scene: int):
@@ -200,7 +229,7 @@ def build_scene_bevs(scene, args):
         if written >= args.frames_per_scene:
             break
 
-        lidar_xyz, reference = aggregate_lidar(
+        lidar_xyz, reference, frame_metadata = aggregate_lidar(
             lidar_frames,
             lidar_poses,
             start_index,
@@ -228,6 +257,7 @@ def build_scene_bevs(scene, args):
             "scene_root": str(scene["root"]),
             "reference_lidar_timestamp": reference["timestamp"],
             "reference_lidar_path": str(reference["path"]),
+            "aggregated_lidar_frames": frame_metadata,
             "sensor_mode": "lidar_only",
             "aggregate_scans": args.aggregate_scans,
             "aggregation": "t_to_t_plus_scans_minus_1_motion_compensated_to_reference_lidar",

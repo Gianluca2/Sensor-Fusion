@@ -1,18 +1,31 @@
 from pathlib import Path
 import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import json
+import os
 import random
+from types import SimpleNamespace
 
 import numpy as np
 
+from bev_projection import project_lidar_bev
+from build_bev_dataset import (
+    invert_transform,
+    load_poses,
+    nearest_by_timestamp,
+    pose_to_transform,
+    transform_xyz,
+)
+from hercules_lidar_faults import (
+    SUPPORTED_HERCULES_LIDAR_FAULTS,
+    apply_hercules_lidar_fault,
+)
+from build_bev_dataset import read_aeva_bin
 
-DEFAULT_BEV = (
-    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs"
-    r"\bev\bev_match_000000.npz"
-)
-DEFAULT_OUTPUT_DIR = (
-    r"C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\outputs\autoencoder_dataset"
-)
+
+FAST_OUTPUT_ROOT = r"C:\Users\gianl\ThesisOutputs\HerculesFiles\outputs"
+DEFAULT_BEV = str(Path(FAST_OUTPUT_ROOT) / "bev" / "bev_match_000000.npz")
+DEFAULT_OUTPUT_DIR = str(Path(FAST_OUTPUT_ROOT) / "autoencoder_dataset")
 DEFAULT_LAYERS = [
     "lidar_density",
     "lidar_height",
@@ -20,8 +33,10 @@ DEFAULT_LAYERS = [
     "lidar_height_spread",
     "lidar_height_bin_occupancy_ratio",
 ]
-OCCUPANCY_LAYER_INDICES = [0, 1, 2, 3, 4]
-MASKED_LAYER_INDICES = [0, 1, 2, 3, 4]
+DEFAULT_REALISTIC_FAULTS = ["laser", "photodetector", "scanning", "optical", "window", "mounting"]
+DEFAULT_REALISTIC_SEVERITIES = ["mild", "moderate", "severe"]
+FAULT_CLASSES = ["laser", "photodetector", "scanning", "optical", "window", "mounting"]
+LIDAR_FRAME_CACHE = {}
 
 
 def load_clean_bev(path: Path, layers):
@@ -45,84 +60,154 @@ def find_bev_files(bev_dir: Path):
     )
 
 
-def random_rect(height, width, min_h, max_h, min_w, max_w, min_area, max_area):
-    for _ in range(1000):
-        rect_h = random.randint(min_h, max_h)
-        rect_w = random.randint(min_w, max_w)
-        area = rect_h * rect_w
-        if min_area <= area <= max_area:
-            break
+def read_cached_aeva_bin(path: Path):
+    cache_key = str(path)
+    if cache_key not in LIDAR_FRAME_CACHE:
+        LIDAR_FRAME_CACHE[cache_key] = read_aeva_bin(path)
+    return LIDAR_FRAME_CACHE[cache_key]
+
+
+def scene_pose_file(source_metadata: dict) -> Path:
+    scene_root = Path(source_metadata["scene_root"])
+    pose_path = scene_root / "PR_GT" / "Aeva_gt.txt"
+    if not pose_path.exists():
+        raise FileNotFoundError(f"Could not find Aeva pose file: {pose_path}")
+    return pose_path
+
+
+def load_faulted_aggregated_lidar(source_metadata: dict, fault_type: str, severity: str, rng):
+    if "aggregated_lidar_frames" in source_metadata:
+        frames = source_metadata["aggregated_lidar_frames"]
     else:
-        raise RuntimeError(
-            "Could not sample a mask inside the requested area limits. "
-            "Adjust --min-mask-area-fraction, --max-mask-area-fraction, or mask height/width limits."
+        frames = [{
+            "timestamp": source_metadata["reference_lidar_timestamp"],
+            "path": source_metadata["reference_lidar_path"],
+        }]
+
+    poses = load_poses(scene_pose_file(source_metadata))
+    reference_timestamp = int(source_metadata["reference_lidar_timestamp"])
+    reference_pose = nearest_by_timestamp(reference_timestamp, poses)
+    reference_to_world = pose_to_transform(reference_pose)
+    world_to_reference = invert_transform(reference_to_world)
+    aggregated = []
+
+    for frame in frames:
+        frame_path = Path(frame["path"])
+        frame_timestamp = int(frame["timestamp"])
+        frame_pose = nearest_by_timestamp(frame_timestamp, poses)
+        sensor_to_world = pose_to_transform(frame_pose)
+        sensor_to_reference = world_to_reference @ sensor_to_world
+
+        points = read_cached_aeva_bin(frame_path)
+        faulted = apply_hercules_lidar_fault(
+            points,
+            fault_type=fault_type,
+            severity=severity,
+            rng=rng,
         )
+        transformed_xyz = transform_xyz(faulted[:, :3], sensor_to_reference).astype(np.float32)
+        aggregated.append(transformed_xyz)
 
-    row = random.randint(0, max(0, height - rect_h))
-    col = random.randint(0, max(0, width - rect_w))
-    return row, row + rect_h, col, col + rect_w
-
-
-def build_occupancy_map(clean: np.ndarray, threshold: float) -> np.ndarray:
-    occupancy_layers = clean[OCCUPANCY_LAYER_INDICES]
-    return np.any(occupancy_layers > threshold, axis=0)
+    return np.vstack(aggregated)
 
 
-def choose_nonempty_rect(occupancy: np.ndarray, args):
-    height, width = occupancy.shape
-    min_area = int(height * width * args.min_mask_area_fraction)
-    max_area = int(height * width * args.max_mask_area_fraction)
+def stack_layers(bev_layers: dict) -> np.ndarray:
+    return np.stack([bev_layers[layer].astype(np.float32) for layer in DEFAULT_LAYERS], axis=0)
 
-    for _ in range(args.max_mask_attempts):
-        row_start, row_end, col_start, col_end = random_rect(
-            height,
-            width,
-            min_h=args.min_mask_height,
-            max_h=args.max_mask_height,
-            min_w=args.min_mask_width,
-            max_w=args.max_mask_width,
-            min_area=min_area,
-            max_area=max_area,
-        )
-        occupied_cells = int(np.count_nonzero(occupancy[row_start:row_end, col_start:col_end]))
-        mask_area = (row_end - row_start) * (col_end - col_start)
 
-        if occupied_cells >= args.min_mask_occupied_cells and min_area <= mask_area <= max_area:
-            return row_start, row_end, col_start, col_end, occupied_cells, mask_area
+def difference_target(clean: np.ndarray, faulty: np.ndarray, threshold: float) -> np.ndarray:
+    difference = np.max(np.abs(clean - faulty), axis=0)
+    return (difference > threshold).astype(np.float32)
 
-    raise RuntimeError(
-        "Could not find a mask region with enough occupied BEV cells. "
-        "Try lowering --min-mask-occupied-cells or increasing --max-mask-attempts."
+
+def make_hercules_lidar_fault_sample(clean, source_metadata, sample_index: int, args):
+    if getattr(args, "balanced_fault_grid", False):
+        combo_count = len(args.realistic_faults) * len(args.realistic_fault_severities)
+        combo_index = sample_index % combo_count
+        fault_type = args.realistic_faults[combo_index // len(args.realistic_fault_severities)]
+        severity = args.realistic_fault_severities[combo_index % len(args.realistic_fault_severities)]
+    else:
+        fault_type = random.choice(args.realistic_faults)
+        severity = random.choice(args.realistic_fault_severities)
+    rng = np.random.default_rng(args.seed + sample_index)
+    faulted_xyz = load_faulted_aggregated_lidar(
+        source_metadata,
+        fault_type=fault_type,
+        severity=severity,
+        rng=rng,
     )
+    x_range = tuple(source_metadata["x_range_m"])
+    y_range = tuple(source_metadata["y_range_m"])
+    z_range = tuple(source_metadata["z_range_m"])
+    resolution = float(source_metadata["resolution_m_per_cell"])
+    z_resolution = float(source_metadata["z_resolution_m_per_voxel"])
 
-
-def make_sample(clean: np.ndarray, occupancy: np.ndarray, sample_index: int, args):
-    _, height, width = clean.shape
-    row_start, row_end, col_start, col_end, occupied_cells, mask_area = choose_nonempty_rect(
-        occupancy,
-        args,
+    faulty_layers = project_lidar_bev(
+        faulted_xyz,
+        x_range=x_range,
+        y_range=y_range,
+        resolution=resolution,
+        z_range=z_range,
+        z_resolution=z_resolution,
     )
-
-    faulty = np.array(clean, copy=True)
-    faulty[MASKED_LAYER_INDICES, row_start:row_end, col_start:col_end] = 0.0
-
-    target = np.zeros((height, width), dtype=np.float32)
-    target[row_start:row_end, col_start:col_end] = 1.0
+    faulty = stack_layers(faulty_layers)
+    target = difference_target(clean, faulty, args.realistic_target_threshold)
 
     metadata = {
         "sample_index": sample_index,
-        "mask": {
-            "row_start": row_start,
-            "row_end": row_end,
-            "col_start": col_start,
-            "col_end": col_end,
-            "area_cells": mask_area,
-            "area_fraction": mask_area / (height * width),
-            "occupied_cells_before_masking": occupied_cells,
-        },
+        "fault_source": "hercules_lidar",
+        "fault_type": fault_type,
+        "fault_severity": severity,
+        "fault_target_cells": int(np.count_nonzero(target)),
+        "fault_target_fraction": float(np.count_nonzero(target) / target.size),
     }
-
     return faulty, target, metadata
+
+
+def write_sample(sample_path: Path, faulty, clean, target, sample_metadata, compressed: bool):
+    writer = np.savez_compressed if compressed else np.savez
+    writer(
+        sample_path,
+        input=faulty.astype(np.float32),
+        clean=clean.astype(np.float32),
+        target=target.astype(np.float32),
+        metadata_json=json.dumps(sample_metadata, indent=2),
+    )
+
+
+def generate_sample_record(index: int, bev_files: list[str], args_dict: dict):
+    args = SimpleNamespace(**args_dict)
+    random.seed(args.seed + index)
+    np.random.seed(args.seed + index)
+
+    if getattr(args, "balanced_fault_grid", False):
+        combo_count = len(args.realistic_faults) * len(args.realistic_fault_severities)
+        source_bev = Path(bev_files[(index // combo_count) % len(bev_files)])
+    else:
+        source_bev = Path(bev_files[index % len(bev_files)])
+    clean, source_metadata = load_clean_bev(source_bev, DEFAULT_LAYERS)
+    faulty, target, sample_metadata = make_hercules_lidar_fault_sample(
+        clean,
+        source_metadata,
+        index,
+        args,
+    )
+
+    sample_path = Path(args.output_dir) / f"sample_{index:06d}.npz"
+    sample_metadata["source_bev"] = str(source_bev)
+    sample_metadata["source_metadata"] = source_metadata
+    write_sample(
+        sample_path,
+        faulty,
+        clean,
+        target,
+        sample_metadata,
+        compressed=args.compressed_samples,
+    )
+    return {
+        "path": str(sample_path),
+        **sample_metadata,
+    }
 
 
 def clear_existing_samples(output_dir: Path):
@@ -132,6 +217,32 @@ def clear_existing_samples(output_dir: Path):
         removed += 1
 
     return removed
+
+
+def existing_dataset_is_usable(output_dir: Path, requested_samples: int, args) -> bool:
+    manifest_path = output_dir / "manifest.json"
+    if not manifest_path.exists():
+        return False
+
+    sample_count = sum(1 for _ in output_dir.glob("sample_*.npz"))
+    if sample_count < requested_samples:
+        return False
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+
+    manifest_severities = manifest.get("realistic_fault_severities")
+    if manifest_severities is None and "realistic_fault_severity" in manifest:
+        manifest_severities = [manifest["realistic_fault_severity"]]
+
+    return (
+        manifest.get("fault_source") == "hercules_lidar"
+        and sorted(manifest.get("realistic_faults", [])) == sorted(args.realistic_faults)
+        and sorted(manifest_severities or []) == sorted(args.realistic_fault_severities)
+        and manifest.get("compressed_samples") == args.compressed_samples
+    )
 
 
 def main():
@@ -146,23 +257,65 @@ def main():
     )
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--num-samples", type=int, default=200)
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=min(2, os.cpu_count() or 1),
+        help="Parallel workers used for sample generation. Use 1 for sequential generation.",
+    )
+    parser.add_argument(
+        "--compressed-samples",
+        action="store_true",
+        help="Use compressed .npz samples. Default is faster uncompressed .npz.",
+    )
+    parser.add_argument(
+        "--reuse-existing",
+        action="store_true",
+        help="Reuse an existing sample dataset instead of deleting and regenerating it.",
+    )
+    parser.add_argument(
+        "--balanced-fault-grid",
+        action="store_true",
+        help="Cycle every BEV through every selected fault type and severity combination.",
+    )
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--min-mask-height", type=int, default=25)
-    parser.add_argument("--max-mask-height", type=int, default=90)
-    parser.add_argument("--min-mask-width", type=int, default=25)
-    parser.add_argument("--max-mask-width", type=int, default=90)
-    parser.add_argument("--min-mask-area-fraction", type=float, default=0.01)
-    parser.add_argument("--max-mask-area-fraction", type=float, default=0.03)
-    parser.add_argument("--min-mask-occupied-cells", type=int, default=50)
-    parser.add_argument("--occupancy-threshold", type=float, default=0.0)
-    parser.add_argument("--max-mask-attempts", type=int, default=500)
+    parser.add_argument(
+        "--realistic-fault",
+        dest="realistic_faults",
+        action="append",
+        choices=SUPPORTED_HERCULES_LIDAR_FAULTS,
+        help="HeRCULES LiDAR fault type to sample. Repeat to mix faults.",
+    )
+    parser.add_argument(
+        "--realistic-fault-severity",
+        dest="realistic_fault_severities",
+        action="append",
+        choices=["mild", "moderate", "severe"],
+        help="Fault severity to sample. Repeat to mix severities. Defaults to all severities.",
+    )
+    parser.add_argument(
+        "--realistic-target-threshold",
+        type=float,
+        default=0.05,
+        help="BEV channel-difference threshold used to label realistic fault target cells.",
+    )
     args = parser.parse_args()
+    if args.realistic_faults is None:
+        args.realistic_faults = list(DEFAULT_REALISTIC_FAULTS)
+    if args.realistic_fault_severities is None:
+        args.realistic_fault_severities = list(DEFAULT_REALISTIC_SEVERITIES)
 
     random.seed(args.seed)
     np.random.seed(args.seed)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    if args.reuse_existing and existing_dataset_is_usable(output_dir, args.num_samples, args):
+        print(f"Reusing existing samples in {output_dir}")
+        print(f"Requested samples: {args.num_samples}")
+        print("Use the pipeline option --rebuild-dataset if you want fresh fault samples.")
+        return
+
     removed_samples = clear_existing_samples(output_dir)
     if removed_samples:
         print(f"Removed {removed_samples} stale sample files from {output_dir}")
@@ -180,34 +333,34 @@ def main():
         "source_bev_count": len(bev_files),
         "num_samples": args.num_samples,
         "layers": DEFAULT_LAYERS,
-        "occupancy_layers": [DEFAULT_LAYERS[index] for index in OCCUPANCY_LAYER_INDICES],
-        "masked_layers": [DEFAULT_LAYERS[index] for index in MASKED_LAYER_INDICES],
-        "min_mask_occupied_cells": args.min_mask_occupied_cells,
-        "min_mask_area_fraction": args.min_mask_area_fraction,
-        "max_mask_area_fraction": args.max_mask_area_fraction,
+        "fault_classes": FAULT_CLASSES,
+        "fault_source": "hercules_lidar",
+        "realistic_faults": args.realistic_faults,
+        "realistic_fault_severities": args.realistic_fault_severities,
+        "realistic_target_threshold": args.realistic_target_threshold,
+        "compressed_samples": args.compressed_samples,
+        "balanced_fault_grid": args.balanced_fault_grid,
+        "num_workers": args.num_workers,
         "samples": [],
     }
 
-    for index in range(args.num_samples):
-        source_bev = bev_files[index % len(bev_files)]
-        clean, source_metadata = load_clean_bev(source_bev, DEFAULT_LAYERS)
-        occupancy = build_occupancy_map(clean, args.occupancy_threshold)
-        faulty, target, sample_metadata = make_sample(clean, occupancy, index, args)
-        sample_path = output_dir / f"sample_{index:06d}.npz"
-        sample_metadata["source_bev"] = str(source_bev)
-        sample_metadata["source_metadata"] = source_metadata
-
-        np.savez_compressed(
-            sample_path,
-            input=faulty.astype(np.float32),
-            clean=clean.astype(np.float32),
-            target=target.astype(np.float32),
-            metadata_json=json.dumps(sample_metadata, indent=2),
-        )
-        manifest["samples"].append({
-            "path": str(sample_path),
-            **sample_metadata,
-        })
+    bev_file_strings = [str(path) for path in bev_files]
+    args.output_dir = str(output_dir)
+    args_dict = vars(args).copy()
+    if args.num_workers <= 1:
+        for index in range(args.num_samples):
+            manifest["samples"].append(generate_sample_record(index, bev_file_strings, args_dict))
+    else:
+        with ProcessPoolExecutor(max_workers=args.num_workers) as executor:
+            futures = [
+                executor.submit(generate_sample_record, index, bev_file_strings, args_dict)
+                for index in range(args.num_samples)
+            ]
+            for completed_count, future in enumerate(as_completed(futures), start=1):
+                manifest["samples"].append(future.result())
+                if completed_count % 100 == 0 or completed_count == args.num_samples:
+                    print(f"Generated {completed_count}/{args.num_samples} samples")
+        manifest["samples"].sort(key=lambda row: row["sample_index"])
 
     manifest_path = output_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -215,9 +368,11 @@ def main():
     print(f"Wrote {args.num_samples} samples to {output_dir}")
     print(f"Wrote manifest: {manifest_path}")
     print(f"Source BEV files: {len(bev_files)}")
-    print(f"Minimum occupied cells per mask: {args.min_mask_occupied_cells}")
-    print(f"Minimum mask area fraction: {args.min_mask_area_fraction:.3f}")
-    print(f"Maximum mask area fraction: {args.max_mask_area_fraction:.3f}")
+    print("Fault source: hercules_lidar")
+    print(f"Sample compression: {'compressed' if args.compressed_samples else 'uncompressed'}")
+    print(f"Sample generation workers: {args.num_workers}")
+    print(f"Realistic fault types: {', '.join(args.realistic_faults)}")
+    print(f"Realistic fault severities: {', '.join(args.realistic_fault_severities)}")
 
 
 if __name__ == "__main__":

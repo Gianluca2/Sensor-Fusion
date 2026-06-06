@@ -27,6 +27,7 @@ Core Model V2 scripts:
 ```text
 model_v2\Model_V2.py
 model_v2\train_model_v2.py
+model_v2\rewrite_model_v2_samples.py
 model_v2\predict_model_v2_reconstruction_error.py
 model_v2\predict_model_v2.py
 ```
@@ -82,6 +83,55 @@ Quick CUDA check:
 ```powershell
 cd "C:\Users\gianl\OneDrive\Desktop\Thesis\HerculesFiles\MaskingTest"
 .\.venv311\Scripts\python.exe -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NO CUDA')"
+```
+
+## Rewrite Samples From The Full HeRCULES Dataset
+
+On the Linux training machine, use `rewrite_model_v2_samples.py` to rebuild the BEV pool from every available LiDAR frame and then rewrite paired faulty/clean samples.
+
+Example using your shown HeRCULES folder:
+
+```bash
+cd /mnt/3D10B36523559581/Gianluca/Sensor-Fusion
+python3 model_v2/rewrite_model_v2_samples.py \
+  --data-root /mnt/3D10B36523559581/Gianluca/HeRCULES \
+  --bev-dir /mnt/3D10B36523559581/Gianluca/model_v2_outputs/bev_all_frames \
+  --dataset-dir /mnt/3D10B36523559581/Gianluca/model_v2_outputs/model_v2_dataset \
+  --rewrite-bev \
+  --num-workers 8
+```
+
+This uses:
+
+```text
+stride = 1
+aggregate_scans = 3
+fault types = laser, photodetector, scanning, optical, window, mounting
+severities = mild, moderate, severe
+```
+
+By default, every BEV frame receives every fault/severity combination once:
+
+```text
+samples = BEV frame count * 6 fault types * 3 severities
+```
+
+For a quick test, cap the BEV frames per scene:
+
+```bash
+python3 model_v2/rewrite_model_v2_samples.py \
+  --data-root /mnt/3D10B36523559581/Gianluca/HeRCULES \
+  --frames-per-scene-cap 20 \
+  --num-workers 2
+```
+
+After rewriting samples, train with:
+
+```bash
+python3 model_v2/train_model_v2.py \
+  --dataset-dir /mnt/3D10B36523559581/Gianluca/model_v2_outputs/model_v2_dataset \
+  --model-path /mnt/3D10B36523559581/Gianluca/model_v2_outputs/models/model_v2.pt \
+  --metrics-path /mnt/3D10B36523559581/Gianluca/model_v2_outputs/models/model_v2_training_metrics.csv
 ```
 
 ## Train Model V2
