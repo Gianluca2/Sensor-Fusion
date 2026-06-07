@@ -14,7 +14,6 @@ from Model_V2 import (
     SEVERITY_CLASSES,
     ModelV2LossWeights,
     model_v2_loss,
-    reconstruction_error_map,
 )
 
 ##1. predict fault mask
@@ -75,9 +74,9 @@ class PairedBEVDataset(Dataset):
         )
 
 
-def mask_metric_values(error_map, targets, threshold: float):
-    probs = error_map
-    preds = error_map >= threshold
+def mask_metric_values(probabilities, targets, threshold: float):
+    probs = probabilities
+    preds = probabilities >= threshold
     targets_bool = targets >= 0.5
     batch_size = targets.shape[0]
     height = targets.shape[2]
@@ -133,13 +132,14 @@ def mask_metric_values(error_map, targets, threshold: float):
         "predicted_cells": predicted_cells,
         "area_error": area_error,
         "centroid_distance_norm": centroid_distance_norm,
-        "mean_error": probs.flatten(start_dim=1).mean(dim=1),
+        "mean_probability": probs.flatten(start_dim=1).mean(dim=1),
     }
 
 
 METRIC_FIELDS = [
     "loss",
-    "reconstruction_loss",
+    "mask_bce_loss",
+    "mask_dice_loss",
     "learning_rate",
     "iou",
     "precision",
@@ -152,7 +152,7 @@ METRIC_FIELDS = [
     "predicted_cells",
     "area_error",
     "centroid_distance_norm",
-    "mean_error",
+    "mean_probability",
 ]
 
 
@@ -180,10 +180,11 @@ def run_epoch(model, loader, optimizer, device, args, weights):
 
         batch_size = faulty.shape[0]
         totals["loss"] += loss.detach().item() * batch_size
-        totals["reconstruction_loss"] += loss_parts["reconstruction_loss"].detach().item() * batch_size
+        totals["mask_bce_loss"] += loss_parts["mask_bce_loss"].detach().item() * batch_size
+        totals["mask_dice_loss"] += loss_parts["mask_dice_loss"].detach().item() * batch_size
 
-        error_map = reconstruction_error_map(faulty, outputs["clean_reconstruction"].detach())
-        metric_values = mask_metric_values(error_map, mask, args.threshold)
+        probabilities = outputs["fault_probability"].detach()
+        metric_values = mask_metric_values(probabilities, mask, args.threshold)
         for key, values in metric_values.items():
             totals[key] += values.mean().item() * batch_size
         count += batch_size
@@ -239,11 +240,21 @@ def main():
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.08,
-        help="Reconstruction-error threshold used to convert faulty-vs-reconstructed difference into a mask.",
+        default=0.5,
+        help="Fault-probability threshold used to convert the direct mask output into a binary mask.",
     )
-    parser.add_argument("--clean-area-weight", type=float, default=1.0)
-    parser.add_argument("--fault-area-weight", type=float, default=10.0)
+    parser.add_argument(
+        "--positive-weight",
+        type=float,
+        default=3.0,
+        help="BCE positive-class weight. Increase when false negatives are more costly.",
+    )
+    parser.add_argument(
+        "--dice-weight",
+        type=float,
+        default=1.0,
+        help="Weight applied to Dice loss in BCE+Dice mask training.",
+    )
     parser.add_argument("--seed", type=int, default=7)
     args = parser.parse_args()
 
@@ -296,8 +307,8 @@ def main():
         factor=args.lr_reduce_factor,
     )
     weights = ModelV2LossWeights(
-        clean_area=args.clean_area_weight,
-        fault_area=args.fault_area_weight,
+        positive=args.positive_weight,
+        dice=args.dice_weight,
     )
 
     model_path = Path(args.model_path)
@@ -312,13 +323,13 @@ def main():
     print(f"Dataset dir: {args.dataset_dir}")
     print(f"Samples: train={train_size}, val={val_size}, test={test_size}")
     print(f"Input: faulty BEV plus provided fault/severity conditioning")
-    print(f"Targets: clean BEV reconstruction")
-    print("Fault mask: derived from abs(faulty BEV - reconstructed clean BEV)")
+    print(f"Targets: direct fault mask segmentation")
+    print("Fault mask: predicted directly by the model, not derived from reconstruction error.")
     print("Fault/severity labels are provided to the restoration model; it does not classify them.")
     print(f"Model: base_channels={args.base_channels}, depth={args.depth}, dropout={args.dropout}")
     print(
-        "Reconstruction weighting: "
-        f"clean_area={args.clean_area_weight}, fault_area={args.fault_area_weight}"
+        "Mask loss: BCEWithLogits + Dice, "
+        f"positive_weight={args.positive_weight}, dice_weight={args.dice_weight}"
     )
     print(
         "Adaptive LR: ReduceLROnPlateau monitors validation loss, "
@@ -337,15 +348,17 @@ def main():
         print(
             f"Epoch {epoch:03d} | "
             f"train loss {train_metrics['loss']:.4f} "
-            f"recon {train_metrics['reconstruction_loss']:.4f} "
+            f"bce {train_metrics['mask_bce_loss']:.4f} "
+            f"dice {train_metrics['mask_dice_loss']:.4f} "
             f"iou {train_metrics['iou']:.4f} "
             f"recall {train_metrics['recall']:.4f} | "
             f"val loss {val_metrics['loss']:.4f} "
-            f"recon {val_metrics['reconstruction_loss']:.4f} "
+            f"bce {val_metrics['mask_bce_loss']:.4f} "
+            f"dice {val_metrics['mask_dice_loss']:.4f} "
             f"iou {val_metrics['iou']:.4f} "
             f"recall {val_metrics['recall']:.4f} "
             f"precision {val_metrics['precision']:.4f} "
-            f"mean_err {val_metrics['mean_error']:.4f} "
+            f"mean_prob {val_metrics['mean_probability']:.4f} "
             f"lr {optimizer.param_groups[0]['lr']:.2e}"
         )
         if current_lr < previous_lr:
@@ -368,7 +381,7 @@ def main():
                     "severity_embedding_dim": 4,
                     "threshold": args.threshold,
                     "loss_weights": weights.__dict__,
-                    "model_type": "bev_fault_restoration_model_v2_reconstruction_error",
+                    "model_type": "bev_fault_segmentation_model_v2",
                     "best_epoch": best_epoch,
                 },
                 model_path,
@@ -389,11 +402,12 @@ def main():
         append_metrics(metrics_path, best_epoch, "test", test_metrics, optimizer.param_groups[0]["lr"])
         print(
             f"Test | loss {test_metrics['loss']:.4f} "
-            f"recon {test_metrics['reconstruction_loss']:.4f} "
+            f"bce {test_metrics['mask_bce_loss']:.4f} "
+            f"dice {test_metrics['mask_dice_loss']:.4f} "
             f"iou {test_metrics['iou']:.4f} "
             f"recall {test_metrics['recall']:.4f} "
             f"precision {test_metrics['precision']:.4f} "
-            f"mean_err {test_metrics['mean_error']:.4f}"
+            f"mean_prob {test_metrics['mean_probability']:.4f}"
         )
 
     print(f"Saved best model: {model_path}")

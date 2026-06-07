@@ -66,22 +66,19 @@ class UpBlock(nn.Module):
 
 @dataclass(frozen=True)
 class ModelV2LossWeights:
-    clean_area: float = 1.0
-    fault_area: float = 10.0
+    positive: float = 3.0
+    dice: float = 1.0
 
 
 class BEVFaultRestorationModelV2(nn.Module):
     """
-    Supervised paired BEV restoration model.
+    Supervised conditioned BEV fault-segmentation model.
 
     Training target:
-        faulty BEV -> clean BEV reconstruction
+        faulty BEV + known fault/severity -> fault mask
 
     Inference input:
-        faulty BEV only
-
-    Fault localization is derived after reconstruction by comparing the faulty
-    BEV with the reconstructed clean BEV.
+        faulty BEV + known fault/severity
     """
 
     def __init__(
@@ -120,10 +117,7 @@ class BEVFaultRestorationModelV2(nn.Module):
             for index in range(depth - 1, -1, -1)
         )
 
-        self.clean_head = nn.Sequential(
-            nn.Conv2d(channels[0], in_channels, kernel_size=1),
-            nn.Sigmoid(),
-        )
+        self.mask_head = nn.Conv2d(channels[0], 1, kernel_size=1)
 
     def make_condition_maps(self, faulty_bev, fault_type_index=None, severity_index=None):
         batch_size, _, height, width = faulty_bev.shape
@@ -155,8 +149,10 @@ class BEVFaultRestorationModelV2(nn.Module):
         for up, skip in zip(self.up_blocks, reversed(skips[:-1])):
             current = up(current, skip)
 
+        fault_logits = self.mask_head(current)
         return {
-            "clean_reconstruction": self.clean_head(current),
+            "fault_logits": fault_logits,
+            "fault_probability": torch.sigmoid(fault_logits),
         }
 
 
@@ -169,22 +165,26 @@ def reconstruction_error_mask(faulty_bev, reconstructed_clean, threshold: float)
     return error >= threshold
 
 
-def weighted_reconstruction_l1_mse_loss(
-    predicted_clean,
-    clean_target,
-    mask_target,
-    clean_area_weight: float = 1.0,
-    fault_area_weight: float = 10.0,
-):
-    pixel_weights = torch.where(
-        mask_target >= 0.5,
-        torch.as_tensor(fault_area_weight, device=predicted_clean.device),
-        torch.as_tensor(clean_area_weight, device=predicted_clean.device),
+def bce_dice_mask_loss(logits, mask_target, positive_weight: float = 3.0, dice_weight: float = 1.0):
+    positive_weight_tensor = torch.as_tensor(
+        positive_weight,
+        dtype=logits.dtype,
+        device=logits.device,
     )
-    l1 = torch.abs(predicted_clean - clean_target)
-    mse = (predicted_clean - clean_target) ** 2
-    weighted = pixel_weights * (l1 + 0.5 * mse)
-    return weighted.mean()
+    bce = F.binary_cross_entropy_with_logits(
+        logits,
+        mask_target,
+        pos_weight=positive_weight_tensor,
+    )
+
+    probs = torch.sigmoid(logits)
+    smooth = 1.0
+    intersection = (probs * mask_target).sum(dim=(1, 2, 3))
+    denominator = probs.sum(dim=(1, 2, 3)) + mask_target.sum(dim=(1, 2, 3))
+    dice = 1.0 - ((2.0 * intersection + smooth) / (denominator + smooth))
+    dice = dice.mean()
+
+    return bce + dice_weight * dice, bce, dice
 
 
 def model_v2_loss(
@@ -196,16 +196,16 @@ def model_v2_loss(
     if weights is None:
         weights = ModelV2LossWeights()
 
-    reconstruction = weighted_reconstruction_l1_mse_loss(
-        outputs["clean_reconstruction"],
-        clean_target,
+    total, bce, dice = bce_dice_mask_loss(
+        outputs["fault_logits"],
         mask_target,
-        clean_area_weight=weights.clean_area,
-        fault_area_weight=weights.fault_area,
+        positive_weight=weights.positive,
+        dice_weight=weights.dice,
     )
     parts = {
-        "reconstruction_loss": reconstruction,
-        "total_loss": reconstruction,
+        "mask_bce_loss": bce,
+        "mask_dice_loss": dice,
+        "total_loss": total,
     }
 
-    return reconstruction, parts
+    return total, parts

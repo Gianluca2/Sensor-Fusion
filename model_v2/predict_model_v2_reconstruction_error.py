@@ -15,7 +15,6 @@ from Model_V2 import (
     BEVFaultRestorationModelV2,
     FAULT_CLASSES,
     SEVERITY_CLASSES,
-    reconstruction_error_map,
 )
 from bev_fault_visualization import (
     bounding_box,
@@ -30,7 +29,7 @@ from bev_projection import write_image
 FAST_OUTPUT_ROOT = r"C:\Users\gianl\ThesisOutputs\HerculesFiles\outputs"
 DEFAULT_MODEL_PATH = str(Path(FAST_OUTPUT_ROOT) / "models" / "model_v2.pt")
 DEFAULT_SAMPLE_DIR = str(Path(FAST_OUTPUT_ROOT) / "autoencoder_dataset")
-DEFAULT_OUTPUT_DIR = str(Path(FAST_OUTPUT_ROOT) / "model_v2_reconstruction_error_predictions")
+DEFAULT_OUTPUT_DIR = str(Path(FAST_OUTPUT_ROOT) / "model_v2_mask_predictions")
 FAULT_TO_INDEX = {name: index for index, name in enumerate(FAULT_CLASSES)}
 SEVERITY_TO_INDEX = {name: index for index, name in enumerate(SEVERITY_CLASSES)}
 
@@ -89,12 +88,12 @@ def add_overlay_text(rgb: np.ndarray, lines: list[str]) -> np.ndarray:
     return np.asarray(image, dtype=np.uint8)
 
 
-def make_four_panel(clean, reconstruction, faulty, overlay, fault_type: str) -> np.ndarray:
+def make_four_panel(clean, faulty, probability, overlay, fault_type: str) -> np.ndarray:
     clean_panel = add_panel_title(make_input_preview(clean), "Clean BEV")
-    reconstruction_panel = add_panel_title(make_input_preview(reconstruction), "Reconstructed clean BEV")
+    probability_panel = add_panel_title(probability_heatmap(probability), "Predicted fault probability")
     faulty_panel = add_panel_title(make_input_preview(faulty), f"Faulty BEV: {fault_type}")
-    overlay_panel = add_panel_title(overlay, "red=actual blue=error-mask magenta=overlap")
-    top = np.concatenate([clean_panel, reconstruction_panel], axis=1)
+    overlay_panel = add_panel_title(overlay, "red=actual blue=prediction magenta=overlap")
+    top = np.concatenate([clean_panel, probability_panel], axis=1)
     bottom = np.concatenate([faulty_panel, overlay_panel], axis=1)
     return np.concatenate([top, bottom], axis=0)
 
@@ -121,10 +120,9 @@ def predict_one(
         fault_tensor = torch.tensor([fault_type_index], dtype=torch.long, device=device)
         severity_tensor = torch.tensor([severity_index], dtype=torch.long, device=device)
         outputs = model(tensor, fault_tensor, severity_tensor)
-        reconstruction = outputs["clean_reconstruction"][0].cpu().numpy()
-        error = reconstruction_error_map(tensor, outputs["clean_reconstruction"])[0, 0].cpu().numpy()
+        probability = outputs["fault_probability"][0, 0].cpu().numpy()
 
-    predicted_mask = error >= threshold
+    predicted_mask = probability >= threshold
     actual_bool = actual_mask >= 0.5
     iou = mask_iou(predicted_mask, actual_bool)
 
@@ -134,25 +132,23 @@ def predict_one(
         [
             f"actual metadata: {actual_fault_type}/{actual_severity}",
             f"conditioning: {condition_fault_type}/{condition_severity}",
-            f"error threshold: {threshold:.3f}",
+            f"probability threshold: {threshold:.3f}",
             f"IoU: {iou:.3f}",
         ],
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    composite = make_four_panel(clean, reconstruction, faulty, overlay, actual_fault_type)
+    composite = make_four_panel(clean, faulty, probability, overlay, actual_fault_type)
     write_image(output_path, composite)
 
-    error_path = output_path.with_name(f"{output_path.stem}_reconstruction_error.png")
-    reconstruction_path = output_path.with_name(f"{output_path.stem}_reconstruction.png")
+    probability_path = output_path.with_name(f"{output_path.stem}_fault_probability.png")
     overlay_path = output_path.with_name(f"{output_path.stem}_prediction_only.png")
-    write_image(error_path, probability_heatmap(error))
-    write_image(reconstruction_path, make_input_preview(reconstruction))
+    write_image(probability_path, probability_heatmap(probability))
     write_image(overlay_path, overlay)
 
     print(f"Sample: {sample_path}")
     print(f"Output four-panel summary: {output_path}")
-    print(f"Output reconstruction-error heatmap: {error_path}")
+    print(f"Output fault-probability heatmap: {probability_path}")
     print(f"IoU: {iou:.4f}")
     print(f"Conditioning used: {condition_fault_type}/{condition_severity}")
     print(f"Actual free-form mask extent: {bounding_box(actual_bool)}")
@@ -162,7 +158,7 @@ def predict_one(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Visualize conditioned Model_V2 restoration using reconstruction-error fault masks."
+        description="Visualize conditioned Model_V2 direct fault-mask predictions."
     )
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
     parser.add_argument("--sample", default=None)
@@ -176,11 +172,11 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, checkpoint = load_model(Path(args.model_path), device)
-    threshold = args.threshold if args.threshold is not None else checkpoint.get("threshold", 0.08)
+    threshold = args.threshold if args.threshold is not None else checkpoint.get("threshold", 0.5)
 
     print(f"Model: {args.model_path}")
     print(f"Device: {device}")
-    print(f"Reconstruction-error threshold: {threshold:.3f}")
+    print(f"Fault-probability threshold: {threshold:.3f}")
 
     output_dir = Path(args.output_dir)
     if args.sample is not None:
@@ -188,7 +184,7 @@ def main():
             model,
             device,
             Path(args.sample),
-            output_dir / f"{Path(args.sample).stem}_model_v2_reconstruction_error_overlay.png",
+            output_dir / f"{Path(args.sample).stem}_model_v2_mask_overlay.png",
             threshold,
             args.fault_type,
             args.severity,
@@ -201,7 +197,7 @@ def main():
 
     ious = []
     for sample_path in sample_paths:
-        output_path = output_dir / f"{sample_path.stem}_model_v2_reconstruction_error_overlay.png"
+        output_path = output_dir / f"{sample_path.stem}_model_v2_mask_overlay.png"
         ious.append(
             predict_one(
                 model,
@@ -214,7 +210,7 @@ def main():
             )
         )
 
-    print(f"Wrote {len(ious)} reconstruction-error overlay images to {output_dir}")
+    print(f"Wrote {len(ious)} direct mask overlay images to {output_dir}")
     print(f"Mean IoU over saved outputs: {sum(ious) / len(ious):.4f}")
 
 
