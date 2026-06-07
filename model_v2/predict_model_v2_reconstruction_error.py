@@ -67,6 +67,15 @@ def load_model(model_path: Path, device):
     return model, checkpoint
 
 
+def normalize_bev_tensor(tensor, channel_mean, channel_std):
+    if channel_mean is None or channel_std is None:
+        return tensor
+
+    mean = torch.as_tensor(channel_mean, dtype=tensor.dtype, device=tensor.device).view(1, -1, 1, 1)
+    std = torch.as_tensor(channel_std, dtype=tensor.dtype, device=tensor.device).view(1, -1, 1, 1)
+    return (tensor - mean) / torch.clamp(std, min=1e-6)
+
+
 def add_panel_title(rgb: np.ndarray, title: str) -> np.ndarray:
     image = Image.fromarray(rgb.astype(np.uint8), mode="RGB")
     draw = ImageDraw.Draw(image)
@@ -104,6 +113,8 @@ def predict_one(
     sample_path: Path,
     output_path: Path,
     threshold: float,
+    channel_mean=None,
+    channel_std=None,
     fault_type_override: str | None = None,
     severity_override: str | None = None,
 ):
@@ -117,6 +128,7 @@ def predict_one(
 
     with torch.no_grad():
         tensor = torch.from_numpy(faulty[None, :, :, :]).to(device)
+        tensor = normalize_bev_tensor(tensor, channel_mean, channel_std)
         fault_tensor = torch.tensor([fault_type_index], dtype=torch.long, device=device)
         severity_tensor = torch.tensor([severity_index], dtype=torch.long, device=device)
         outputs = model(tensor, fault_tensor, severity_tensor)
@@ -173,10 +185,16 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, checkpoint = load_model(Path(args.model_path), device)
     threshold = args.threshold if args.threshold is not None else checkpoint.get("threshold", 0.5)
+    channel_mean = checkpoint.get("channel_mean")
+    channel_std = checkpoint.get("channel_std")
 
     print(f"Model: {args.model_path}")
     print(f"Device: {device}")
     print(f"Fault-probability threshold: {threshold:.3f}")
+    if channel_mean is not None and channel_std is not None:
+        print("Channel normalization: loaded from checkpoint")
+    else:
+        print("Channel normalization: not present in checkpoint")
 
     output_dir = Path(args.output_dir)
     if args.sample is not None:
@@ -186,6 +204,8 @@ def main():
             Path(args.sample),
             output_dir / f"{Path(args.sample).stem}_model_v2_mask_overlay.png",
             threshold,
+            channel_mean,
+            channel_std,
             args.fault_type,
             args.severity,
         )
@@ -205,6 +225,8 @@ def main():
                 sample_path,
                 output_path,
                 threshold,
+                channel_mean,
+                channel_std,
                 args.fault_type,
                 args.severity,
             )

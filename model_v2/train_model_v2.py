@@ -74,6 +74,47 @@ class PairedBEVDataset(Dataset):
         )
 
 
+def load_faulty_array(path: Path) -> np.ndarray:
+    with np.load(path) as data:
+        return data["input"].astype(np.float32)
+
+
+def compute_channel_normalization(dataset: PairedBEVDataset, indices, max_samples: int, seed: int):
+    selected_indices = list(indices)
+    if max_samples > 0 and len(selected_indices) > max_samples:
+        rng = random.Random(seed)
+        selected_indices = rng.sample(selected_indices, max_samples)
+
+    channel_sum = None
+    channel_sq_sum = None
+    cell_count = 0
+
+    for index in selected_indices:
+        array = load_faulty_array(dataset.paths[index])
+        flattened = array.reshape(array.shape[0], -1).astype(np.float64)
+        if channel_sum is None:
+            channel_sum = flattened.sum(axis=1)
+            channel_sq_sum = (flattened ** 2).sum(axis=1)
+        else:
+            channel_sum += flattened.sum(axis=1)
+            channel_sq_sum += (flattened ** 2).sum(axis=1)
+        cell_count += flattened.shape[1]
+
+    mean = channel_sum / cell_count
+    variance = np.maximum(channel_sq_sum / cell_count - mean ** 2, 1e-8)
+    std = np.sqrt(variance)
+    return mean.astype(np.float32), std.astype(np.float32), len(selected_indices)
+
+
+def normalize_bev_tensor(tensor, channel_mean, channel_std):
+    if channel_mean is None or channel_std is None:
+        return tensor
+
+    mean = torch.as_tensor(channel_mean, dtype=tensor.dtype, device=tensor.device).view(1, -1, 1, 1)
+    std = torch.as_tensor(channel_std, dtype=tensor.dtype, device=tensor.device).view(1, -1, 1, 1)
+    return (tensor - mean) / torch.clamp(std, min=1e-6)
+
+
 def mask_metric_values(probabilities, targets, threshold: float):
     probs = probabilities
     preds = probabilities >= threshold
@@ -156,7 +197,7 @@ METRIC_FIELDS = [
 ]
 
 
-def run_epoch(model, loader, optimizer, device, args, weights):
+def run_epoch(model, loader, optimizer, device, args, weights, channel_mean, channel_std):
     training = optimizer is not None
     model.train(training)
     totals = {key: 0.0 for key in METRIC_FIELDS}
@@ -170,7 +211,8 @@ def run_epoch(model, loader, optimizer, device, args, weights):
         severity_index = severity_index.to(device)
 
         with torch.set_grad_enabled(training):
-            outputs = model(faulty, fault_type_index, severity_index)
+            normalized_faulty = normalize_bev_tensor(faulty, channel_mean, channel_std)
+            outputs = model(normalized_faulty, fault_type_index, severity_index)
             loss, loss_parts = model_v2_loss(outputs, clean, mask, weights)
             if training:
                 optimizer.zero_grad()
@@ -235,6 +277,18 @@ def main():
     parser.add_argument("--base-channels", type=int, default=48)
     parser.add_argument("--depth", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.12)
+    parser.add_argument(
+        "--channel-normalization",
+        choices=["dataset", "none"],
+        default="dataset",
+        help="Normalize BEV input channels using train-split mean/std, or disable normalization.",
+    )
+    parser.add_argument(
+        "--normalization-samples",
+        type=int,
+        default=2048,
+        help="Number of train samples used to estimate channel normalization. Use 0 for all train samples.",
+    )
     parser.add_argument("--val-fraction", type=float, default=0.2)
     parser.add_argument("--test-fraction", type=float, default=0.1)
     parser.add_argument(
@@ -276,6 +330,18 @@ def main():
     train_set = split_sets[0]
     val_set = split_sets[1]
     test_set = split_sets[2] if test_size else None
+
+    if args.channel_normalization == "dataset":
+        channel_mean, channel_std, normalization_count = compute_channel_normalization(
+            dataset,
+            train_set.indices,
+            args.normalization_samples,
+            args.seed,
+        )
+    else:
+        channel_mean = None
+        channel_std = None
+        normalization_count = 0
 
     pin_memory = device.type == "cuda"
     loader_kwargs = {
@@ -327,6 +393,15 @@ def main():
     print("Fault mask: predicted directly by the model, not derived from reconstruction error.")
     print("Fault/severity labels are provided to the restoration model; it does not classify them.")
     print(f"Model: base_channels={args.base_channels}, depth={args.depth}, dropout={args.dropout}")
+    if channel_mean is not None:
+        print(
+            "Channel normalization: train-split mean/std, "
+            f"samples={normalization_count}, "
+            f"mean={np.array2string(channel_mean, precision=4)}, "
+            f"std={np.array2string(channel_std, precision=4)}"
+        )
+    else:
+        print("Channel normalization: disabled")
     print(
         "Mask loss: BCEWithLogits + Dice, "
         f"positive_weight={args.positive_weight}, dice_weight={args.dice_weight}"
@@ -337,8 +412,26 @@ def main():
     )
 
     for epoch in range(1, args.epochs + 1):
-        train_metrics = run_epoch(model, train_loader, optimizer, device, args, weights)
-        val_metrics = run_epoch(model, val_loader, None, device, args, weights)
+        train_metrics = run_epoch(
+            model,
+            train_loader,
+            optimizer,
+            device,
+            args,
+            weights,
+            channel_mean,
+            channel_std,
+        )
+        val_metrics = run_epoch(
+            model,
+            val_loader,
+            None,
+            device,
+            args,
+            weights,
+            channel_mean,
+            channel_std,
+        )
         previous_lr = optimizer.param_groups[0]["lr"]
         scheduler.step(val_metrics["loss"])
         current_lr = optimizer.param_groups[0]["lr"]
@@ -381,6 +474,9 @@ def main():
                     "severity_embedding_dim": 4,
                     "threshold": args.threshold,
                     "loss_weights": weights.__dict__,
+                    "channel_normalization": args.channel_normalization,
+                    "channel_mean": channel_mean.tolist() if channel_mean is not None else None,
+                    "channel_std": channel_std.tolist() if channel_std is not None else None,
                     "model_type": "bev_fault_segmentation_model_v2",
                     "best_epoch": best_epoch,
                 },
@@ -398,7 +494,16 @@ def main():
         except TypeError:
             checkpoint = torch.load(model_path, map_location=device)
         model.load_state_dict(checkpoint["model_state"])
-        test_metrics = run_epoch(model, test_loader, None, device, args, weights)
+        test_metrics = run_epoch(
+            model,
+            test_loader,
+            None,
+            device,
+            args,
+            weights,
+            channel_mean,
+            channel_std,
+        )
         append_metrics(metrics_path, best_epoch, "test", test_metrics, optimizer.param_groups[0]["lr"])
         print(
             f"Test | loss {test_metrics['loss']:.4f} "
