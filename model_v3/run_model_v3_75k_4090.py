@@ -34,6 +34,40 @@ def check_environment(python_exe: str, repo_dir: Path):
     )
 
 
+def build_samples_in_chunks(args, repo_dir: Path, data_root: Path, dataset_dir: Path):
+    remaining = args.num_samples
+    start_index = 0
+    while remaining > 0:
+        chunk_samples = min(args.sample_chunk_size, remaining)
+        rewrite_command = [
+            args.python,
+            str(repo_dir / "model_v3" / "rewrite_model_v3_samples.py"),
+            "--data-root",
+            str(data_root),
+            "--dataset-dir",
+            str(dataset_dir),
+            "--num-samples",
+            str(chunk_samples),
+            "--start-index",
+            str(start_index),
+            "--aggregate-scans",
+            str(args.aggregate_scans),
+            "--keep-existing",
+            "--skip-existing",
+        ]
+        if not args.uncompressed_samples:
+            rewrite_command.append("--compressed-samples")
+
+        chunk_end = start_index + chunk_samples - 1
+        run_step(
+            f"1. Build/rewrite Model V3 sample chunk {start_index}-{chunk_end}",
+            rewrite_command,
+            repo_dir,
+        )
+        start_index += chunk_samples
+        remaining -= chunk_samples
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run the 75k-sample, 75-epoch Model V3 experiment on the RTX 4090 Linux machine."
@@ -47,6 +81,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--loader-workers", type=int, default=8)
     parser.add_argument("--aggregate-scans", type=int, default=3)
+    parser.add_argument("--sample-chunk-size", type=int, default=2500)
     parser.add_argument("--threshold", type=float, default=0.65)
     parser.add_argument("--positive-weight", type=float, default=3.0)
     parser.add_argument("--negative-weight", type=float, default=1.5)
@@ -85,22 +120,7 @@ def main():
 
     check_environment(args.python, repo_dir)
 
-    rewrite_command = [
-        args.python,
-        str(repo_dir / "model_v3" / "rewrite_model_v3_samples.py"),
-        "--data-root",
-        str(data_root),
-        "--dataset-dir",
-        str(dataset_dir),
-        "--num-samples",
-        str(args.num_samples),
-        "--aggregate-scans",
-        str(args.aggregate_scans),
-    ]
-    if not args.uncompressed_samples:
-        rewrite_command.append("--compressed-samples")
-
-    run_step("1. Build/rewrite 75k Model V3 samples", rewrite_command, repo_dir)
+    build_samples_in_chunks(args, repo_dir, data_root, dataset_dir)
 
     run_step(
         "2. Train Model V3 for 75 epochs",

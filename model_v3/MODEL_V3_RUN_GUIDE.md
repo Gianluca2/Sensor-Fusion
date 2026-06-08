@@ -59,6 +59,10 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 python model_v3/run_model_v3_75k_4090.py
 ```
 
+The 75k run generates samples in 2,500-sample chunks. If sample generation crashes,
+rerun the same command; existing `sample_*.npz` files are skipped and the run
+continues filling the missing chunks.
+
 This writes:
 
 ```text

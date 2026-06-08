@@ -297,6 +297,14 @@ def write_sample(path: Path, faulty, clean, target, metadata, compressed: bool):
     )
 
 
+def load_existing_metadata(path: Path):
+    with np.load(path) as data:
+        metadata = {}
+        if "metadata_json" in data.files:
+            metadata = json.loads(str(data["metadata_json"].item()))
+    return metadata
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=(
@@ -307,6 +315,12 @@ def main():
     parser.add_argument("--data-root", default=str(DEFAULT_DATA_ROOT))
     parser.add_argument("--dataset-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--num-samples", type=int, default=5000)
+    parser.add_argument(
+        "--start-index",
+        type=int,
+        default=0,
+        help="First global sample index to write. Useful for chunked/resumable generation.",
+    )
     parser.add_argument("--aggregate-scans", type=int, default=3)
     parser.add_argument("--x-min", type=float, default=0.0)
     parser.add_argument("--x-max", type=float, default=80.0)
@@ -320,6 +334,11 @@ def main():
         "--keep-existing",
         action="store_true",
         help="Do not delete existing sample_*.npz files before writing.",
+    )
+    parser.add_argument(
+        "--skip-existing",
+        action="store_true",
+        help="Skip sample files that already exist instead of rewriting them.",
     )
     args = parser.parse_args()
 
@@ -347,6 +366,8 @@ def main():
         "data_root": str(Path(args.data_root)),
         "dataset_dir": str(output_dir),
         "num_samples": args.num_samples,
+        "start_index": args.start_index,
+        "end_index_exclusive": args.start_index + args.num_samples,
         "aggregate_scans": args.aggregate_scans,
         "layers": V3_LAYERS,
         "fault_types": FAULT_TYPES,
@@ -356,13 +377,30 @@ def main():
         "samples": [],
     }
 
-    for index in range(args.num_samples):
-        faulty, clean, target, metadata = make_sample(index, scenes, args)
+    for offset, index in enumerate(range(args.start_index, args.start_index + args.num_samples)):
         sample_path = output_dir / f"sample_{index:06d}.npz"
+        if args.skip_existing and sample_path.exists():
+            metadata = load_existing_metadata(sample_path)
+            if not metadata:
+                metadata = {"sample_index": index, "status": "existing_metadata_missing"}
+            manifest["samples"].append({"path": str(sample_path), **metadata})
+            if (offset + 1) % 25 == 0 or offset + 1 == args.num_samples:
+                print(
+                    f"Generated/skipped {offset + 1}/{args.num_samples} samples "
+                    f"(global index {index})",
+                    flush=True,
+                )
+            continue
+
+        faulty, clean, target, metadata = make_sample(index, scenes, args)
         write_sample(sample_path, faulty, clean, target, metadata, args.compressed_samples)
         manifest["samples"].append({"path": str(sample_path), **metadata})
-        if (index + 1) % 25 == 0 or index + 1 == args.num_samples:
-            print(f"Generated {index + 1}/{args.num_samples} samples", flush=True)
+        if (offset + 1) % 25 == 0 or offset + 1 == args.num_samples:
+            print(
+                f"Generated/skipped {offset + 1}/{args.num_samples} samples "
+                f"(global index {index})",
+                flush=True,
+            )
 
     manifest_path = output_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
