@@ -7,7 +7,7 @@ Model V3 keeps the direct fault-mask segmentation goal from Model V2, but change
 Input:
 
 ```text
-faulty 9-channel LiDAR BEV + known fault type + known severity
+faulty 8-channel LiDAR BEV + known fault type + known severity
 ```
 
 Output:
@@ -20,7 +20,7 @@ The model does not reconstruct clean BEV. It predicts where LiDAR is unreliable.
 
 ## Key Differences From Model V2
 
-1. V3 uses 9 BEV channels:
+1. V3 uses 8 BEV channels:
 
 ```text
 lidar_density
@@ -31,12 +31,7 @@ range_from_sensor
 local_density_residual
 temporal_density_consistency
 expected_density_by_range
-expected_observation_mask
 ```
-
-`expected_observation_mask` is a dilated occupancy prior. It tells the network where
-LiDAR returns are physically plausible around observed structure, so broad empty
-space is easier to learn as non-fault.
 
 2. Faults are injected before BEV projection:
 
@@ -67,7 +62,6 @@ python model_v3/rewrite_model_v3_samples.py \
   --dataset-dir /mnt/3D10B36523559581/Gianluca/model_v3_outputs/model_v3_dataset_5k \
   --num-samples 5000 \
   --aggregate-scans 3 \
-  --observation-dilation-cells 12 \
   --compressed-samples
 
 python model_v3/train_model_v3.py \

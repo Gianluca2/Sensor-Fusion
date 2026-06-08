@@ -92,7 +92,6 @@ def main():
     parser.add_argument("--y-max", type=float, default=40.0)
     parser.add_argument("--resolution", type=float, default=0.2)
     parser.add_argument("--target-threshold", type=float, default=0.05)
-    parser.add_argument("--observation-dilation-cells", type=int, default=12)
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -125,14 +124,12 @@ def main():
                     x_range,
                     y_range,
                     args.resolution,
-                    args.observation_dilation_cells,
                 )
                 faulty_layers = project_lidar_bev_v3(
                     faulty_scans,
                     x_range,
                     y_range,
                     args.resolution,
-                    args.observation_dilation_cells,
                 )
                 clean = stack_layers(clean_layers)
                 faulty = stack_layers(faulty_layers)

@@ -48,7 +48,6 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--aggregate-scans", type=int, default=3)
-    parser.add_argument("--observation-dilation-cells", type=int, default=12)
     parser.add_argument("--quick", action="store_true", help="Run a small smoke test.")
     args = parser.parse_args()
 
@@ -87,8 +86,6 @@ def main():
         str(args.num_samples),
         "--aggregate-scans",
         str(args.aggregate_scans),
-        "--observation-dilation-cells",
-        str(args.observation_dilation_cells),
     ]
     if args.compressed_samples:
         rewrite_command.append("--compressed-samples")
