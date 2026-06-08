@@ -72,11 +72,14 @@ python model_v3/train_model_v3.py \
   --epochs 20 \
   --channel-normalization dataset \
   --normalization-samples 1024 \
-  --threshold 0.75
+  --threshold 0.65 \
+  --positive-weight 3.0 \
+  --negative-weight 1.5
 
 python model_v3/predict_model_v3.py \
   --model-path /mnt/3D10B36523559581/Gianluca/model_v3_outputs/models/model_v3_5k.pt \
   --sample-dir /mnt/3D10B36523559581/Gianluca/model_v3_outputs/model_v3_dataset_5k \
   --output-dir /mnt/3D10B36523559581/Gianluca/model_v3_outputs/model_v3_5k_predictions \
-  --num-outputs 10
+  --num-outputs 10 \
+  --threshold 0.65
 ```

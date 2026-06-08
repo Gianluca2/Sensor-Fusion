@@ -67,6 +67,7 @@ class UpBlock(nn.Module):
 @dataclass(frozen=True)
 class ModelV3LossWeights:
     positive: float = 3.0
+    negative: float = 1.5
     dice: float = 1.0
 
 
@@ -165,17 +166,24 @@ def reconstruction_error_mask(faulty_bev, reconstructed_clean, threshold: float)
     return error >= threshold
 
 
-def bce_dice_mask_loss(logits, mask_target, positive_weight: float = 3.0, dice_weight: float = 1.0):
-    positive_weight_tensor = torch.as_tensor(
-        positive_weight,
-        dtype=logits.dtype,
-        device=logits.device,
-    )
-    bce = F.binary_cross_entropy_with_logits(
+def bce_dice_mask_loss(
+    logits,
+    mask_target,
+    positive_weight: float = 3.0,
+    negative_weight: float = 1.5,
+    dice_weight: float = 1.0,
+):
+    bce_per_cell = F.binary_cross_entropy_with_logits(
         logits,
         mask_target,
-        pos_weight=positive_weight_tensor,
+        reduction="none",
     )
+    cell_weights = torch.where(
+        mask_target >= 0.5,
+        torch.as_tensor(positive_weight, dtype=logits.dtype, device=logits.device),
+        torch.as_tensor(negative_weight, dtype=logits.dtype, device=logits.device),
+    )
+    bce = (bce_per_cell * cell_weights).mean()
 
     probs = torch.sigmoid(logits)
     smooth = 1.0
@@ -200,6 +208,7 @@ def model_v3_loss(
         outputs["fault_logits"],
         mask_target,
         positive_weight=weights.positive,
+        negative_weight=weights.negative,
         dice_weight=weights.dice,
     )
     parts = {

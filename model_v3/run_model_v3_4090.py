@@ -48,6 +48,9 @@ def main():
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--aggregate-scans", type=int, default=3)
+    parser.add_argument("--threshold", type=float, default=0.65)
+    parser.add_argument("--positive-weight", type=float, default=3.0)
+    parser.add_argument("--negative-weight", type=float, default=1.5)
     parser.add_argument("--quick", action="store_true", help="Run a small smoke test.")
     args = parser.parse_args()
 
@@ -109,6 +112,12 @@ def main():
             str(args.loader_workers),
             "--epochs",
             str(args.epochs),
+            "--threshold",
+            str(args.threshold),
+            "--positive-weight",
+            str(args.positive_weight),
+            "--negative-weight",
+            str(args.negative_weight),
         ],
         repo_dir,
     )
@@ -126,6 +135,8 @@ def main():
             str(prediction_dir),
             "--num-outputs",
             "10",
+            "--threshold",
+            str(args.threshold),
         ],
         repo_dir,
     )

@@ -294,7 +294,7 @@ def main():
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.75,
+        default=0.65,
         help="Fault-probability threshold used to convert the direct mask output into a binary mask.",
     )
     parser.add_argument(
@@ -302,6 +302,12 @@ def main():
         type=float,
         default=3.0,
         help="BCE positive-class weight. Increase when false negatives are more costly.",
+    )
+    parser.add_argument(
+        "--negative-weight",
+        type=float,
+        default=1.5,
+        help="BCE negative-class weight. Increase to penalize false positives more strongly.",
     )
     parser.add_argument(
         "--dice-weight",
@@ -374,6 +380,7 @@ def main():
     )
     weights = ModelV3LossWeights(
         positive=args.positive_weight,
+        negative=args.negative_weight,
         dice=args.dice_weight,
     )
 
@@ -404,7 +411,9 @@ def main():
         print("Channel normalization: disabled")
     print(
         "Mask loss: BCEWithLogits + Dice, "
-        f"positive_weight={args.positive_weight}, dice_weight={args.dice_weight}"
+        f"positive_weight={args.positive_weight}, "
+        f"negative_weight={args.negative_weight}, "
+        f"dice_weight={args.dice_weight}"
     )
     print(
         "Adaptive LR: ReduceLROnPlateau monitors validation loss, "
