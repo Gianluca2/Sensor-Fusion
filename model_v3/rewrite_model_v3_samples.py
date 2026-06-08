@@ -36,7 +36,7 @@ V3_LAYERS = [
     "local_density_residual",
     "temporal_density_consistency",
     "expected_density_by_range",
-    "range_normalized_density_residual",
+    "expected_observation_mask",
 ]
 
 
@@ -89,6 +89,19 @@ def local_mean_3x3(grid: np.ndarray) -> np.ndarray:
     return total / 9.0
 
 
+def dilate_binary_mask(mask: np.ndarray, radius_cells: int) -> np.ndarray:
+    if radius_cells <= 0:
+        return mask.astype(np.float32)
+
+    padded = np.pad(mask.astype(bool), radius_cells, mode="constant", constant_values=False)
+    output = np.zeros_like(mask, dtype=bool)
+    size = radius_cells * 2 + 1
+    for row_offset in range(size):
+        for col_offset in range(size):
+            output |= padded[row_offset:row_offset + mask.shape[0], col_offset:col_offset + mask.shape[1]]
+    return output.astype(np.float32)
+
+
 def make_range_channels(height: int, width: int, x_range, y_range, resolution: float):
     x_min, x_max = x_range
     y_min, y_max = y_range
@@ -117,6 +130,7 @@ def project_lidar_bev_v3(
     x_range,
     y_range,
     resolution: float,
+    observation_dilation_cells: int,
 ):
     lidar_xyz = np.vstack(scan_xyz_list).astype(np.float32)
     xyz, rows, cols, height, width = metric_to_grid(lidar_xyz, x_range, y_range, resolution)
@@ -144,8 +158,7 @@ def project_lidar_bev_v3(
         y_range,
         resolution,
     )
-    density_deficit = np.maximum(expected_density_by_range - density_normalized, 0.0)
-    range_normalized_density_residual = normalize_by_max(density_deficit)
+    expected_observation_mask = dilate_binary_mask(binary_occupancy, observation_dilation_cells)
 
     temporal_stack = [
         occupancy_grid(scan_xyz, x_range, y_range, resolution)
@@ -166,7 +179,7 @@ def project_lidar_bev_v3(
         "local_density_residual": local_density_residual,
         "temporal_density_consistency": temporal_density_consistency,
         "expected_density_by_range": expected_density_by_range,
-        "range_normalized_density_residual": range_normalized_density_residual,
+        "expected_observation_mask": expected_observation_mask,
     }
 
 
@@ -255,8 +268,20 @@ def make_sample(index: int, scenes, args):
     )
     x_range = (args.x_min, args.x_max)
     y_range = (args.y_min, args.y_max)
-    clean_layers = project_lidar_bev_v3(clean_scans, x_range, y_range, args.resolution)
-    faulty_layers = project_lidar_bev_v3(faulty_scans, x_range, y_range, args.resolution)
+    clean_layers = project_lidar_bev_v3(
+        clean_scans,
+        x_range,
+        y_range,
+        args.resolution,
+        args.observation_dilation_cells,
+    )
+    faulty_layers = project_lidar_bev_v3(
+        faulty_scans,
+        x_range,
+        y_range,
+        args.resolution,
+        args.observation_dilation_cells,
+    )
     clean = stack_layers(clean_layers)
     faulty = stack_layers(faulty_layers)
     target = difference_target(clean, faulty, args.target_threshold)
@@ -279,6 +304,7 @@ def make_sample(index: int, scenes, args):
         "y_range_m": list(y_range),
         "resolution_m_per_cell": args.resolution,
         "aggregate_scans": args.aggregate_scans,
+        "observation_dilation_cells": args.observation_dilation_cells,
     }
     return faulty, clean, target, metadata
 
@@ -311,6 +337,15 @@ def main():
     parser.add_argument("--y-max", type=float, default=40.0)
     parser.add_argument("--resolution", type=float, default=0.2)
     parser.add_argument("--target-threshold", type=float, default=0.05)
+    parser.add_argument(
+        "--observation-dilation-cells",
+        type=int,
+        default=12,
+        help=(
+            "Dilate occupied LiDAR BEV cells by this many cells to create the "
+            "expected_observation_mask channel."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--compressed-samples", action="store_true")
     parser.add_argument(
@@ -349,6 +384,7 @@ def main():
         "fault_types": FAULT_TYPES,
         "severities": SEVERITIES,
         "target_threshold": args.target_threshold,
+        "observation_dilation_cells": args.observation_dilation_cells,
         "fault_injection_stage": "before_bev_projection",
         "samples": [],
     }
