@@ -252,12 +252,54 @@ def append_metrics(path: Path, epoch: int, split: str, metrics: dict, learning_r
         writer.writerow(row)
 
 
+def make_checkpoint(
+    model,
+    first_faulty,
+    args,
+    weights,
+    channel_mean,
+    channel_std,
+    epoch: int,
+    best_epoch: int,
+    best_val_loss: float,
+    train_metrics: dict,
+    val_metrics: dict,
+):
+    return {
+        "model_state": model.state_dict(),
+        "in_channels": first_faulty.shape[0],
+        "base_channels": args.base_channels,
+        "depth": args.depth,
+        "dropout": args.dropout,
+        "fault_classes": FAULT_CLASSES,
+        "severity_classes": SEVERITY_CLASSES,
+        "fault_embedding_dim": 8,
+        "severity_embedding_dim": 4,
+        "threshold": args.threshold,
+        "loss_weights": weights.__dict__,
+        "channel_normalization": args.channel_normalization,
+        "channel_mean": channel_mean.tolist() if channel_mean is not None else None,
+        "channel_std": channel_std.tolist() if channel_std is not None else None,
+        "model_type": "bev_fault_segmentation_model_v3",
+        "epoch": epoch,
+        "best_epoch": best_epoch,
+        "best_val_loss": best_val_loss,
+        "train_metrics": train_metrics,
+        "val_metrics": val_metrics,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Train Model_V3 from existing paired faulty/clean BEV samples without regenerating data."
     )
     parser.add_argument("--dataset-dir", default=DEFAULT_DATASET_DIR)
     parser.add_argument("--model-path", default=DEFAULT_MODEL_PATH)
+    parser.add_argument(
+        "--latest-model-path",
+        default=None,
+        help="Optional checkpoint path overwritten after every epoch with the latest model state.",
+    )
     parser.add_argument("--metrics-path", default=DEFAULT_METRICS_PATH)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch-size", type=int, default=2)
@@ -386,6 +428,9 @@ def main():
 
     model_path = Path(args.model_path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
+    latest_model_path = Path(args.latest_model_path) if args.latest_model_path else None
+    if latest_model_path is not None:
+        latest_model_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path = Path(args.metrics_path)
     write_metrics_header(metrics_path)
     best_val_loss = float("inf")
@@ -466,36 +511,50 @@ def main():
         if current_lr < previous_lr:
             print(f"Learning rate reduced: {previous_lr:.2e} -> {current_lr:.2e}")
 
+        should_stop = False
         if val_metrics["loss"] < best_val_loss - args.min_delta:
             best_val_loss = val_metrics["loss"]
             best_epoch = epoch
             epochs_without_improvement = 0
-            torch.save(
-                {
-                    "model_state": model.state_dict(),
-                    "in_channels": first_faulty.shape[0],
-                    "base_channels": args.base_channels,
-                    "depth": args.depth,
-                    "dropout": args.dropout,
-                    "fault_classes": FAULT_CLASSES,
-                    "severity_classes": SEVERITY_CLASSES,
-                    "fault_embedding_dim": 8,
-                    "severity_embedding_dim": 4,
-                    "threshold": args.threshold,
-                    "loss_weights": weights.__dict__,
-                    "channel_normalization": args.channel_normalization,
-                    "channel_mean": channel_mean.tolist() if channel_mean is not None else None,
-                    "channel_std": channel_std.tolist() if channel_std is not None else None,
-                    "model_type": "bev_fault_segmentation_model_v3",
-                    "best_epoch": best_epoch,
-                },
-                model_path,
+            best_checkpoint = make_checkpoint(
+                model,
+                first_faulty,
+                args,
+                weights,
+                channel_mean,
+                channel_std,
+                epoch,
+                best_epoch,
+                best_val_loss,
+                train_metrics,
+                val_metrics,
             )
+            torch.save(best_checkpoint, model_path)
         else:
             epochs_without_improvement += 1
             print(f"No val-loss improvement for {epochs_without_improvement}/{args.early_stop_patience} epochs")
             if epochs_without_improvement >= args.early_stop_patience:
-                break
+                should_stop = True
+
+        if latest_model_path is not None:
+            latest_checkpoint = make_checkpoint(
+                model,
+                first_faulty,
+                args,
+                weights,
+                channel_mean,
+                channel_std,
+                epoch,
+                best_epoch,
+                best_val_loss,
+                train_metrics,
+                val_metrics,
+            )
+            torch.save(latest_checkpoint, latest_model_path)
+            print(f"Saved latest epoch checkpoint: {latest_model_path}")
+
+        if should_stop:
+            break
 
     if test_loader is not None and model_path.exists():
         try:

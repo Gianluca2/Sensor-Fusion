@@ -49,6 +49,28 @@ source .venv_model_v2/bin/activate
 python model_v3/run_model_v3_4090.py --quick --compressed-samples
 ```
 
+## Linux 75k-Sample 75-Epoch Run
+
+```bash
+cd /mnt/3D10B36523559581/Gianluca/Sensor-Fusion
+source .venv_model_v2/bin/activate
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+python model_v3/run_model_v3_75k_4090.py
+```
+
+This writes:
+
+```text
+/mnt/3D10B36523559581/Gianluca/model_v3_outputs_75k/model_v3_dataset_75k
+/mnt/3D10B36523559581/Gianluca/model_v3_outputs_75k/models/model_v3_75k_best.pt
+/mnt/3D10B36523559581/Gianluca/model_v3_outputs_75k/models/model_v3_75k_latest.pt
+/mnt/3D10B36523559581/Gianluca/model_v3_outputs_75k/models/model_v3_75k_training_metrics.csv
+/mnt/3D10B36523559581/Gianluca/model_v3_outputs_75k/model_v3_75k_predictions
+```
+
+`model_v3_75k_latest.pt` is overwritten after every epoch. `model_v3_75k_best.pt` keeps the best validation-loss checkpoint.
+
 ## Linux 5000-Sample Test
 
 ```bash
