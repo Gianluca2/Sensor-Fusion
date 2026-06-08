@@ -35,7 +35,6 @@ V3_LAYERS = [
     "range_from_sensor",
     "local_density_residual",
     "temporal_density_consistency",
-    "expected_density_by_range",
 ]
 
 
@@ -88,7 +87,7 @@ def local_mean_3x3(grid: np.ndarray) -> np.ndarray:
     return total / 9.0
 
 
-def make_range_channels(height: int, width: int, x_range, y_range, resolution: float):
+def make_range_channel(height: int, width: int, x_range, y_range, resolution: float):
     x_min, x_max = x_range
     y_min, y_max = y_range
     row_indices = np.arange(height, dtype=np.float32)
@@ -99,8 +98,7 @@ def make_range_channels(height: int, width: int, x_range, y_range, resolution: f
     metric_range = np.sqrt(x_grid * x_grid + y_grid * y_grid).astype(np.float32)
     max_range = max(float(np.max(metric_range)), 1e-6)
     range_from_sensor = metric_range / max_range
-    expected_density_by_range = np.exp(-metric_range / (0.5 * max_range)).astype(np.float32)
-    return range_from_sensor.astype(np.float32), expected_density_by_range
+    return range_from_sensor.astype(np.float32)
 
 
 def occupancy_grid(xyz: np.ndarray, x_range, y_range, resolution: float):
@@ -136,7 +134,7 @@ def project_lidar_bev_v3(
     height_spread = normalize_by_max(height_spread)
     binary_occupancy = occupied.astype(np.float32)
     local_density_residual = normalize_by_max(np.abs(density_normalized - local_mean_3x3(density_normalized)))
-    range_from_sensor, expected_density_by_range = make_range_channels(
+    range_from_sensor = make_range_channel(
         height,
         width,
         x_range,
@@ -162,7 +160,6 @@ def project_lidar_bev_v3(
         "range_from_sensor": range_from_sensor,
         "local_density_residual": local_density_residual,
         "temporal_density_consistency": temporal_density_consistency,
-        "expected_density_by_range": expected_density_by_range,
     }
 
 
