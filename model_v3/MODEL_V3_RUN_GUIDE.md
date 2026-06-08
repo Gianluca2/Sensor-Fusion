@@ -31,6 +31,7 @@ range_from_sensor
 local_density_residual
 temporal_density_consistency
 expected_density_by_range
+range_normalized_density_residual
 ```
 
 2. Faults are injected before BEV projection:
@@ -72,7 +73,8 @@ python model_v3/train_model_v3.py \
   --loader-workers 4 \
   --epochs 20 \
   --channel-normalization dataset \
-  --normalization-samples 1024
+  --normalization-samples 1024 \
+  --threshold 0.75
 
 python model_v3/predict_model_v3.py \
   --model-path /mnt/3D10B36523559581/Gianluca/model_v3_outputs/models/model_v3_5k.pt \

@@ -36,6 +36,7 @@ V3_LAYERS = [
     "local_density_residual",
     "temporal_density_consistency",
     "expected_density_by_range",
+    "range_normalized_density_residual",
 ]
 
 
@@ -143,6 +144,8 @@ def project_lidar_bev_v3(
         y_range,
         resolution,
     )
+    density_deficit = np.maximum(expected_density_by_range - density_normalized, 0.0)
+    range_normalized_density_residual = normalize_by_max(density_deficit)
 
     temporal_stack = [
         occupancy_grid(scan_xyz, x_range, y_range, resolution)
@@ -163,6 +166,7 @@ def project_lidar_bev_v3(
         "local_density_residual": local_density_residual,
         "temporal_density_consistency": temporal_density_consistency,
         "expected_density_by_range": expected_density_by_range,
+        "range_normalized_density_residual": range_normalized_density_residual,
     }
 
 

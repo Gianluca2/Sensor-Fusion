@@ -184,7 +184,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, checkpoint = load_model(Path(args.model_path), device)
-    threshold = args.threshold if args.threshold is not None else checkpoint.get("threshold", 0.5)
+    threshold = args.threshold if args.threshold is not None else checkpoint.get("threshold", 0.75)
     channel_mean = checkpoint.get("channel_mean")
     channel_std = checkpoint.get("channel_std")
 

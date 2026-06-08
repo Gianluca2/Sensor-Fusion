@@ -294,7 +294,7 @@ def main():
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.5,
+        default=0.75,
         help="Fault-probability threshold used to convert the direct mask output into a binary mask.",
     )
     parser.add_argument(
