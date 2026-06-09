@@ -254,6 +254,8 @@ def append_metrics(path: Path, epoch: int, split: str, metrics: dict, learning_r
 
 def make_checkpoint(
     model,
+    optimizer,
+    scheduler,
     first_faulty,
     args,
     weights,
@@ -267,6 +269,8 @@ def make_checkpoint(
 ):
     return {
         "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict() if optimizer is not None else None,
+        "scheduler_state": scheduler.state_dict() if scheduler is not None else None,
         "in_channels": first_faulty.shape[0],
         "base_channels": args.base_channels,
         "depth": args.depth,
@@ -299,6 +303,11 @@ def main():
         "--latest-model-path",
         default=None,
         help="Optional checkpoint path overwritten after every epoch with the latest model state.",
+    )
+    parser.add_argument(
+        "--resume-from",
+        default=None,
+        help="Optional checkpoint path to resume training from.",
     )
     parser.add_argument("--metrics-path", default=DEFAULT_METRICS_PATH)
     parser.add_argument("--epochs", type=int, default=5)
@@ -426,16 +435,50 @@ def main():
         dice=args.dice_weight,
     )
 
+    start_epoch = 1
+    best_val_loss = float("inf")
+    best_epoch = 0
+    epochs_without_improvement = 0
+    resume_path = Path(args.resume_from) if args.resume_from else None
+    if resume_path is not None and resume_path.exists():
+        try:
+            checkpoint = torch.load(resume_path, map_location=device, weights_only=True)
+        except TypeError:
+            checkpoint = torch.load(resume_path, map_location=device)
+
+        if int(checkpoint.get("in_channels", first_faulty.shape[0])) != first_faulty.shape[0]:
+            raise ValueError(
+                f"Checkpoint expects {checkpoint.get('in_channels')} channels, "
+                f"but dataset has {first_faulty.shape[0]} channels."
+            )
+
+        model.load_state_dict(checkpoint["model_state"])
+        optimizer_state = checkpoint.get("optimizer_state")
+        if optimizer_state is not None:
+            optimizer.load_state_dict(optimizer_state)
+        scheduler_state = checkpoint.get("scheduler_state")
+        if scheduler_state is not None:
+            scheduler.load_state_dict(scheduler_state)
+
+        start_epoch = int(checkpoint.get("epoch", 0)) + 1
+        best_epoch = int(checkpoint.get("best_epoch", 0))
+        best_val_loss = float(checkpoint.get("best_val_loss", float("inf")))
+        print(f"Resuming from checkpoint: {resume_path}")
+        print(f"Resume start epoch: {start_epoch}")
+        print(f"Best epoch so far: {best_epoch}, best val loss: {best_val_loss:.6f}")
+    elif resume_path is not None:
+        print(f"Resume checkpoint not found, starting fresh: {resume_path}")
+
     model_path = Path(args.model_path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
     latest_model_path = Path(args.latest_model_path) if args.latest_model_path else None
     if latest_model_path is not None:
         latest_model_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path = Path(args.metrics_path)
-    write_metrics_header(metrics_path)
-    best_val_loss = float("inf")
-    best_epoch = 0
-    epochs_without_improvement = 0
+    if start_epoch == 1 or not metrics_path.exists():
+        write_metrics_header(metrics_path)
+    else:
+        print(f"Appending metrics to existing file: {metrics_path}")
 
     print(f"Device: {device}")
     print(f"Dataset dir: {args.dataset_dir}")
@@ -465,7 +508,7 @@ def main():
         f"patience={args.lr_reduce_patience}, factor={args.lr_reduce_factor}"
     )
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         train_metrics = run_epoch(
             model,
             train_loader,
@@ -518,6 +561,8 @@ def main():
             epochs_without_improvement = 0
             best_checkpoint = make_checkpoint(
                 model,
+                optimizer,
+                scheduler,
                 first_faulty,
                 args,
                 weights,
@@ -539,6 +584,8 @@ def main():
         if latest_model_path is not None:
             latest_checkpoint = make_checkpoint(
                 model,
+                optimizer,
+                scheduler,
                 first_faulty,
                 args,
                 weights,

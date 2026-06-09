@@ -74,6 +74,9 @@ This writes:
 ```
 
 `model_v3_75k_latest.pt` is overwritten after every epoch. `model_v3_75k_best.pt` keeps the best validation-loss checkpoint.
+If training is interrupted, run the same command again. The launcher resumes from
+`model_v3_75k_latest.pt` automatically and continues until epoch 75. Use
+`--restart-training` only if you intentionally want to ignore the latest checkpoint.
 
 ## Linux 5000-Sample Test
 

@@ -68,6 +68,42 @@ def build_samples_in_chunks(args, repo_dir: Path, data_root: Path, dataset_dir: 
         remaining -= chunk_samples
 
 
+def training_command(args, repo_dir: Path, dataset_dir: Path, best_model_path: Path, latest_model_path: Path, metrics_path: Path):
+    command = [
+        args.python,
+        str(repo_dir / "model_v3" / "train_model_v3.py"),
+        "--dataset-dir",
+        str(dataset_dir),
+        "--model-path",
+        str(best_model_path),
+        "--latest-model-path",
+        str(latest_model_path),
+        "--metrics-path",
+        str(metrics_path),
+        "--batch-size",
+        str(args.batch_size),
+        "--loader-workers",
+        str(args.loader_workers),
+        "--epochs",
+        str(args.epochs),
+        "--early-stop-patience",
+        str(args.early_stop_patience),
+        "--channel-normalization",
+        "dataset",
+        "--normalization-samples",
+        str(args.normalization_samples),
+        "--threshold",
+        str(args.threshold),
+        "--positive-weight",
+        str(args.positive_weight),
+        "--negative-weight",
+        str(args.negative_weight),
+    ]
+    if latest_model_path.exists() and not args.restart_training:
+        command.extend(["--resume-from", str(latest_model_path)])
+    return command
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Run the 75k-sample, 75-epoch Model V3 experiment on the RTX 4090 Linux machine."
@@ -88,6 +124,11 @@ def main():
     parser.add_argument("--normalization-samples", type=int, default=4096)
     parser.add_argument("--num-prediction-outputs", type=int, default=20)
     parser.add_argument("--early-stop-patience", type=int, default=75)
+    parser.add_argument(
+        "--restart-training",
+        action="store_true",
+        help="Ignore model_v3_75k_latest.pt and train from epoch 1.",
+    )
     parser.add_argument(
         "--uncompressed-samples",
         action="store_true",
@@ -124,36 +165,7 @@ def main():
 
     run_step(
         "2. Train Model V3 for 75 epochs",
-        [
-            args.python,
-            str(repo_dir / "model_v3" / "train_model_v3.py"),
-            "--dataset-dir",
-            str(dataset_dir),
-            "--model-path",
-            str(best_model_path),
-            "--latest-model-path",
-            str(latest_model_path),
-            "--metrics-path",
-            str(metrics_path),
-            "--batch-size",
-            str(args.batch_size),
-            "--loader-workers",
-            str(args.loader_workers),
-            "--epochs",
-            str(args.epochs),
-            "--early-stop-patience",
-            str(args.early_stop_patience),
-            "--channel-normalization",
-            "dataset",
-            "--normalization-samples",
-            str(args.normalization_samples),
-            "--threshold",
-            str(args.threshold),
-            "--positive-weight",
-            str(args.positive_weight),
-            "--negative-weight",
-            str(args.negative_weight),
-        ],
+        training_command(args, repo_dir, dataset_dir, best_model_path, latest_model_path, metrics_path),
         repo_dir,
     )
 
