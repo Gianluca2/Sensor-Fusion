@@ -7,7 +7,7 @@ Model V3 keeps the direct fault-mask segmentation goal from Model V2, but change
 Input:
 
 ```text
-faulty 7-channel LiDAR BEV + known fault type + known severity
+faulty 10-channel LiDAR/radar BEV + known fault type + known severity
 ```
 
 Output:
@@ -20,7 +20,7 @@ The model does not reconstruct clean BEV. It predicts where LiDAR is unreliable.
 
 ## Key Differences From Model V2
 
-1. V3 uses 7 BEV channels:
+1. V3 uses 10 BEV channels:
 
 ```text
 lidar_density
@@ -30,7 +30,12 @@ binary_occupancy
 range_from_sensor
 local_density_residual
 temporal_density_consistency
+radar_occupancy
+radar_density
+radar_abs_velocity
 ```
+
+The radar channels are conditioning channels. They are not faulted; they give the network a weak expectation of where structure or occupancy may exist even when LiDAR becomes unreliable.
 
 2. Faults are injected before BEV projection:
 
@@ -39,6 +44,19 @@ raw Aeva point cloud -> fault injector -> motion compensation -> BEV projection
 ```
 
 This means the faulty BEV is produced from faulty LiDAR points, instead of applying an artificial mask after BEV creation.
+
+3. The default loss is range-weighted BCE + Dice:
+
+```text
+loss = weighted BCEWithLogits + Dice
+negative_weight = 2.2
+positive_weight = 2.0
+range_loss_weight = 1.0
+```
+
+The negative weight is slightly higher than the positive weight to reduce false positives without making false negatives cheap. The range weighting multiplies the per-cell mask loss by `1 + range_loss_weight * range_from_sensor`, so farther cells matter more during optimization.
+
+Because the input changed from 7 channels to 10 channels, regenerate Model V3 samples in a new dataset folder before training. Do not mix old 7-channel samples with new radar-conditioned samples.
 
 ## Linux Quick Run
 
@@ -102,8 +120,10 @@ python model_v3/train_model_v3.py \
   --channel-normalization dataset \
   --normalization-samples 1024 \
   --threshold 0.65 \
-  --positive-weight 3.0 \
-  --negative-weight 1.5
+  --positive-weight 2.0 \
+  --negative-weight 2.2 \
+  --range-loss-weight 1.0 \
+  --range-channel-index 4
 
 python model_v3/predict_model_v3.py \
   --model-path /mnt/3D10B36523559581/Gianluca/model_v3_outputs/models/model_v3_5k.pt \

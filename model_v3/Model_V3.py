@@ -66,9 +66,10 @@ class UpBlock(nn.Module):
 
 @dataclass(frozen=True)
 class ModelV3LossWeights:
-    positive: float = 3.0
-    negative: float = 1.5
+    positive: float = 2.0
+    negative: float = 2.2
     dice: float = 1.0
+    range: float = 1.0
 
 
 class BEVFaultRestorationModelV3(nn.Module):
@@ -169,9 +170,10 @@ def reconstruction_error_mask(faulty_bev, reconstructed_clean, threshold: float)
 def bce_dice_mask_loss(
     logits,
     mask_target,
-    positive_weight: float = 3.0,
-    negative_weight: float = 1.5,
+    positive_weight: float = 2.0,
+    negative_weight: float = 2.2,
     dice_weight: float = 1.0,
+    spatial_weight=None,
 ):
     bce_per_cell = F.binary_cross_entropy_with_logits(
         logits,
@@ -183,12 +185,18 @@ def bce_dice_mask_loss(
         torch.as_tensor(positive_weight, dtype=logits.dtype, device=logits.device),
         torch.as_tensor(negative_weight, dtype=logits.dtype, device=logits.device),
     )
+    if spatial_weight is not None:
+        cell_weights = cell_weights * spatial_weight
     bce = (bce_per_cell * cell_weights).mean()
 
     probs = torch.sigmoid(logits)
     smooth = 1.0
-    intersection = (probs * mask_target).sum(dim=(1, 2, 3))
-    denominator = probs.sum(dim=(1, 2, 3)) + mask_target.sum(dim=(1, 2, 3))
+    if spatial_weight is None:
+        intersection = (probs * mask_target).sum(dim=(1, 2, 3))
+        denominator = probs.sum(dim=(1, 2, 3)) + mask_target.sum(dim=(1, 2, 3))
+    else:
+        intersection = (spatial_weight * probs * mask_target).sum(dim=(1, 2, 3))
+        denominator = (spatial_weight * probs).sum(dim=(1, 2, 3)) + (spatial_weight * mask_target).sum(dim=(1, 2, 3))
     dice = 1.0 - ((2.0 * intersection + smooth) / (denominator + smooth))
     dice = dice.mean()
 
@@ -200,6 +208,7 @@ def model_v3_loss(
     clean_target,
     mask_target,
     weights: ModelV3LossWeights | None = None,
+    spatial_weight=None,
 ):
     if weights is None:
         weights = ModelV3LossWeights()
@@ -210,6 +219,7 @@ def model_v3_loss(
         positive_weight=weights.positive,
         negative_weight=weights.negative,
         dice_weight=weights.dice,
+        spatial_weight=spatial_weight,
     )
     parts = {
         "mask_bce_loss": bce,

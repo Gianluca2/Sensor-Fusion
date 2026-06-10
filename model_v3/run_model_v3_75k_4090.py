@@ -98,6 +98,10 @@ def training_command(args, repo_dir: Path, dataset_dir: Path, best_model_path: P
         str(args.positive_weight),
         "--negative-weight",
         str(args.negative_weight),
+        "--range-loss-weight",
+        str(args.range_loss_weight),
+        "--range-channel-index",
+        str(args.range_channel_index),
     ]
     if latest_model_path.exists() and not args.restart_training:
         command.extend(["--resume-from", str(latest_model_path)])
@@ -119,8 +123,10 @@ def main():
     parser.add_argument("--aggregate-scans", type=int, default=3)
     parser.add_argument("--sample-chunk-size", type=int, default=2500)
     parser.add_argument("--threshold", type=float, default=0.65)
-    parser.add_argument("--positive-weight", type=float, default=3.0)
-    parser.add_argument("--negative-weight", type=float, default=1.5)
+    parser.add_argument("--positive-weight", type=float, default=2.0)
+    parser.add_argument("--negative-weight", type=float, default=2.2)
+    parser.add_argument("--range-loss-weight", type=float, default=1.0)
+    parser.add_argument("--range-channel-index", type=int, default=4)
     parser.add_argument("--normalization-samples", type=int, default=4096)
     parser.add_argument("--num-prediction-outputs", type=int, default=20)
     parser.add_argument("--early-stop-patience", type=int, default=75)

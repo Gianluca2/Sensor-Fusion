@@ -211,9 +211,13 @@ def run_epoch(model, loader, optimizer, device, args, weights, channel_mean, cha
         severity_index = severity_index.to(device)
 
         with torch.set_grad_enabled(training):
+            spatial_weight = None
+            if args.range_loss_weight > 0.0:
+                range_channel = faulty[:, args.range_channel_index:args.range_channel_index + 1, :, :]
+                spatial_weight = 1.0 + args.range_loss_weight * torch.clamp(range_channel, 0.0, 1.0)
             normalized_faulty = normalize_bev_tensor(faulty, channel_mean, channel_std)
             outputs = model(normalized_faulty, fault_type_index, severity_index)
-            loss, loss_parts = model_v3_loss(outputs, clean, mask, weights)
+            loss, loss_parts = model_v3_loss(outputs, clean, mask, weights, spatial_weight=spatial_weight)
             if training:
                 optimizer.zero_grad()
                 loss.backward()
@@ -351,13 +355,13 @@ def main():
     parser.add_argument(
         "--positive-weight",
         type=float,
-        default=3.0,
+        default=2.0,
         help="BCE positive-class weight. Increase when false negatives are more costly.",
     )
     parser.add_argument(
         "--negative-weight",
         type=float,
-        default=1.5,
+        default=2.2,
         help="BCE negative-class weight. Increase to penalize false positives more strongly.",
     )
     parser.add_argument(
@@ -365,6 +369,18 @@ def main():
         type=float,
         default=1.0,
         help="Weight applied to Dice loss in BCE+Dice mask training.",
+    )
+    parser.add_argument(
+        "--range-loss-weight",
+        type=float,
+        default=1.0,
+        help="Extra spatial loss weight applied by normalized range: 1 + weight * range_channel.",
+    )
+    parser.add_argument(
+        "--range-channel-index",
+        type=int,
+        default=4,
+        help="Input channel index containing range_from_sensor before channel normalization.",
     )
     parser.add_argument("--seed", type=int, default=7)
     args = parser.parse_args()
@@ -433,6 +449,7 @@ def main():
         positive=args.positive_weight,
         negative=args.negative_weight,
         dice=args.dice_weight,
+        range=args.range_loss_weight,
     )
 
     start_epoch = 1
@@ -501,7 +518,8 @@ def main():
         "Mask loss: BCEWithLogits + Dice, "
         f"positive_weight={args.positive_weight}, "
         f"negative_weight={args.negative_weight}, "
-        f"dice_weight={args.dice_weight}"
+        f"dice_weight={args.dice_weight}, "
+        f"range_loss_weight={args.range_loss_weight}"
     )
     print(
         "Adaptive LR: ReduceLROnPlateau monitors validation loss, "

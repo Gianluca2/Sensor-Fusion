@@ -16,10 +16,11 @@ from rewrite_model_v3_samples import (
     FAULT_TYPES,
     SEVERITIES,
     V3_LAYERS,
-    build_clean_and_faulty_scan_lists,
+    build_clean_faulty_and_radar_scan_lists,
     difference_target,
     prepare_scenes,
     project_lidar_bev_v3,
+    project_radar_bev_v3,
     stack_layers,
 )
 
@@ -111,7 +112,7 @@ def main():
                 current_seed = args.seed + seed_offset
                 scene, start_index = select_scene_and_start(scenes, sample_number, current_seed)
                 rng = np.random.default_rng(current_seed + sample_number)
-                clean_scans, faulty_scans, _, _ = build_clean_and_faulty_scan_lists(
+                clean_scans, faulty_scans, radar_scans, radar_velocities, _, _ = build_clean_faulty_and_radar_scan_lists(
                     scene,
                     start_index,
                     args.aggregate_scans,
@@ -131,6 +132,15 @@ def main():
                     y_range,
                     args.resolution,
                 )
+                radar_layers = project_radar_bev_v3(
+                    radar_scans,
+                    radar_velocities,
+                    x_range,
+                    y_range,
+                    args.resolution,
+                )
+                clean_layers.update(radar_layers)
+                faulty_layers.update(radar_layers)
                 clean = stack_layers(clean_layers)
                 faulty = stack_layers(faulty_layers)
                 target = difference_target(clean, faulty, args.target_threshold)

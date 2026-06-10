@@ -2,6 +2,7 @@ from pathlib import Path
 import argparse
 import json
 import random
+import struct
 import sys
 
 import numpy as np
@@ -25,6 +26,7 @@ from hercules_lidar_faults import apply_hercules_lidar_fault
 
 DEFAULT_DATA_ROOT = Path("/mnt/3D10B36523559581/HeRCULES")
 DEFAULT_OUTPUT_DIR = Path("/mnt/3D10B36523559581/Gianluca/model_v3_outputs/model_v3_dataset")
+CONTINENTAL_RECORD_SIZE_BYTES = 29
 FAULT_TYPES = ["laser", "photodetector", "scanning", "optical", "window", "mounting"]
 SEVERITIES = ["mild", "moderate", "severe"]
 V3_LAYERS = [
@@ -35,6 +37,9 @@ V3_LAYERS = [
     "range_from_sensor",
     "local_density_residual",
     "temporal_density_consistency",
+    "radar_occupancy",
+    "radar_density",
+    "radar_abs_velocity",
 ]
 
 
@@ -109,6 +114,133 @@ def occupancy_grid(xyz: np.ndarray, x_range, y_range, resolution: float):
     return occupied
 
 
+def find_first_dir_named(root: Path, name: str):
+    name = name.lower()
+    candidates = [
+        path for path in root.rglob("*")
+        if path.is_dir() and path.name.lower() == name and list(path.glob("*.bin"))
+    ]
+    return sorted(candidates, key=lambda path: len(path.parts))[0] if candidates else None
+
+
+def find_first_file_named(root: Path, name: str):
+    matches = sorted(root.rglob(name), key=lambda path: len(path.parts))
+    return matches[0] if matches else None
+
+
+def read_continental_bin(path: Path) -> np.ndarray:
+    points = []
+    with open(path, "rb") as file:
+        while True:
+            data = file.read(CONTINENTAL_RECORD_SIZE_BYTES)
+            if len(data) == 0:
+                break
+            if len(data) != CONTINENTAL_RECORD_SIZE_BYTES:
+                raise ValueError(
+                    f"Incomplete Continental radar record in {path}: "
+                    f"expected {CONTINENTAL_RECORD_SIZE_BYTES} bytes, got {len(data)}"
+                )
+
+            x, y, z, velocity, radar_range = struct.unpack("fffff", data[:20])
+            rcs = struct.unpack("B", data[20:21])[0]
+            azimuth, elevation = struct.unpack("ff", data[21:29])
+            points.append([x, y, z, velocity, radar_range, rcs, azimuth, elevation])
+
+    return np.asarray(points, dtype=np.float32)
+
+
+def load_lidar_to_radar_transform(calibration_path: Path):
+    with open(calibration_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("Tr_lidar_to_radar:"):
+                values = line.split(":", maxsplit=1)[1].split()
+                numbers = np.asarray([float(value) for value in values], dtype=np.float64)
+                if len(numbers) != 12:
+                    raise ValueError(
+                        f"Expected 12 calibration values in {calibration_path}, got {len(numbers)}"
+                    )
+                transform = np.eye(4, dtype=np.float64)
+                transform[:3, :] = numbers.reshape(3, 4)
+                return transform
+
+    raise ValueError(f"Could not find Tr_lidar_to_radar in {calibration_path}")
+
+
+def transform_radar_to_reference_lidar(
+    radar_points: np.ndarray,
+    radar_to_lidar: np.ndarray,
+    lidar_pose,
+    world_to_reference: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    if len(radar_points) == 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+
+    radar_xyz_lidar = transform_xyz(radar_points[:, :3], radar_to_lidar)
+    lidar_to_world = pose_to_transform(lidar_pose)
+    lidar_to_reference = world_to_reference @ lidar_to_world
+    radar_xyz_reference = transform_xyz(radar_xyz_lidar, lidar_to_reference).astype(np.float32)
+    return radar_xyz_reference, radar_points[:, 3].astype(np.float32)
+
+
+def project_radar_bev_v3(
+    radar_xyz_list: list[np.ndarray],
+    radar_velocity_list: list[np.ndarray],
+    x_range,
+    y_range,
+    resolution: float,
+):
+    if radar_xyz_list:
+        radar_xyz = np.vstack(radar_xyz_list).astype(np.float32)
+        radar_velocity = np.concatenate(radar_velocity_list).astype(np.float32)
+    else:
+        height = int(np.ceil((x_range[1] - x_range[0]) / resolution))
+        width = int(np.ceil((y_range[1] - y_range[0]) / resolution))
+        empty = np.zeros((height, width), dtype=np.float32)
+        return {
+            "radar_occupancy": empty,
+            "radar_density": empty,
+            "radar_abs_velocity": empty,
+        }
+
+    x_min, x_max = x_range
+    y_min, y_max = y_range
+    height = int(np.ceil((x_max - x_min) / resolution))
+    width = int(np.ceil((y_max - y_min) / resolution))
+    valid = (
+        (radar_xyz[:, 0] >= x_min)
+        & (radar_xyz[:, 0] < x_max)
+        & (radar_xyz[:, 1] >= y_min)
+        & (radar_xyz[:, 1] < y_max)
+    )
+    xyz = radar_xyz[valid]
+    velocity = np.abs(radar_velocity[valid])
+    cols = np.floor((xyz[:, 1] - y_min) / resolution).astype(np.int32)
+    rows_from_bottom = np.floor((xyz[:, 0] - x_min) / resolution).astype(np.int32)
+    rows = height - 1 - rows_from_bottom
+    in_grid = (rows >= 0) & (rows < height) & (cols >= 0) & (cols < width)
+    rows = rows[in_grid]
+    cols = cols[in_grid]
+    velocity = velocity[in_grid]
+
+    radar_occupancy = np.zeros((height, width), dtype=np.float32)
+    radar_density = np.zeros((height, width), dtype=np.float32)
+    radar_abs_velocity = np.zeros((height, width), dtype=np.float32)
+
+    if len(rows) > 0:
+        radar_occupancy[rows, cols] = 1.0
+        np.add.at(radar_density, (rows, cols), 1.0)
+        np.maximum.at(radar_abs_velocity, (rows, cols), velocity)
+
+    return {
+        "radar_occupancy": radar_occupancy,
+        "radar_density": normalize_by_max(np.log1p(radar_density)),
+        "radar_abs_velocity": normalize_by_max(radar_abs_velocity),
+    }
+
+
 def project_lidar_bev_v3(
     scan_xyz_list: list[np.ndarray],
     x_range,
@@ -179,7 +311,7 @@ def transform_scan_to_reference(points: np.ndarray, frame_timestamp: int, poses,
     return transform_xyz(points[:, :3], sensor_to_reference).astype(np.float32)
 
 
-def build_clean_and_faulty_scan_lists(scene, start_index: int, scan_count: int, fault_type: str, severity: str, rng):
+def build_clean_faulty_and_radar_scan_lists(scene, start_index: int, scan_count: int, fault_type: str, severity: str, rng):
     lidar_frames = scene["lidar_frames"]
     poses = scene["lidar_poses"]
     reference = lidar_frames[start_index]
@@ -188,6 +320,8 @@ def build_clean_and_faulty_scan_lists(scene, start_index: int, scan_count: int, 
     world_to_reference = invert_transform(reference_to_world)
     clean_scans = []
     faulty_scans = []
+    radar_scans = []
+    radar_velocities = []
     frame_metadata = []
 
     for frame in lidar_frames[start_index:start_index + scan_count]:
@@ -204,13 +338,33 @@ def build_clean_and_faulty_scan_lists(scene, start_index: int, scan_count: int, 
         faulty_scans.append(
             transform_scan_to_reference(faulted_points, frame["timestamp"], poses, world_to_reference)
         )
+        radar_metadata = None
+        if scene.get("radar_frames") and scene.get("radar_to_lidar") is not None:
+            radar_frame = nearest_by_timestamp(frame["timestamp"], scene["radar_frames"])
+            lidar_pose = nearest_by_timestamp(frame["timestamp"], poses)
+            radar_points = read_continental_bin(radar_frame["path"])
+            radar_xyz, radar_velocity = transform_radar_to_reference_lidar(
+                radar_points,
+                scene["radar_to_lidar"],
+                lidar_pose,
+                world_to_reference,
+            )
+            radar_scans.append(radar_xyz)
+            radar_velocities.append(radar_velocity)
+            radar_metadata = {
+                "timestamp": radar_frame["timestamp"],
+                "path": str(radar_frame["path"]),
+                "delta_ms_from_lidar": (radar_frame["timestamp"] - frame["timestamp"]) / 1_000_000.0,
+            }
+
         frame_metadata.append({
             "timestamp": frame["timestamp"],
             "path": str(frame["path"]),
             "delta_ms_from_reference": (frame["timestamp"] - reference["timestamp"]) / 1_000_000.0,
+            "matched_radar": radar_metadata,
         })
 
-    return clean_scans, faulty_scans, reference, frame_metadata
+    return clean_scans, faulty_scans, radar_scans, radar_velocities, reference, frame_metadata
 
 
 def prepare_scenes(data_root: Path, aggregate_scans: int):
@@ -222,6 +376,20 @@ def prepare_scenes(data_root: Path, aggregate_scans: int):
         scene["lidar_frames"] = lidar_frames
         scene["lidar_poses"] = load_poses(scene["aeva_gt"])
         scene["max_start"] = len(lidar_frames) - aggregate_scans
+        radar_dir = find_first_dir_named(scene["root"], "continental")
+        radar_gt = find_first_file_named(scene["root"], "Continental_gt.txt")
+        calibration = find_first_file_named(scene["root"], "Continental_LiDAR.txt")
+        scene["radar_dir"] = radar_dir
+        scene["radar_gt"] = radar_gt
+        scene["calibration"] = calibration
+        if radar_dir and radar_gt and calibration:
+            scene["radar_frames"] = load_frames(radar_dir)
+            scene["radar_poses"] = load_poses(radar_gt)
+            scene["radar_to_lidar"] = invert_transform(load_lidar_to_radar_transform(calibration))
+        else:
+            scene["radar_frames"] = []
+            scene["radar_poses"] = []
+            scene["radar_to_lidar"] = None
         scenes.append(scene)
     if not scenes:
         raise FileNotFoundError(f"No valid HeRCULES scenes found under {data_root}")
@@ -238,7 +406,7 @@ def make_sample(index: int, scenes, args):
     start_index = scene_cycle_index % (scene["max_start"] + 1)
     rng = np.random.default_rng(args.seed + index)
 
-    clean_scans, faulty_scans, reference, frame_metadata = build_clean_and_faulty_scan_lists(
+    clean_scans, faulty_scans, radar_scans, radar_velocities, reference, frame_metadata = build_clean_faulty_and_radar_scan_lists(
         scene,
         start_index,
         args.aggregate_scans,
@@ -260,6 +428,15 @@ def make_sample(index: int, scenes, args):
         y_range,
         args.resolution,
     )
+    radar_layers = project_radar_bev_v3(
+        radar_scans,
+        radar_velocities,
+        x_range,
+        y_range,
+        args.resolution,
+    )
+    clean_layers.update(radar_layers)
+    faulty_layers.update(radar_layers)
     clean = stack_layers(clean_layers)
     faulty = stack_layers(faulty_layers)
     target = difference_target(clean, faulty, args.target_threshold)
@@ -278,6 +455,9 @@ def make_sample(index: int, scenes, args):
         "fault_target_cells": int(np.count_nonzero(target)),
         "fault_target_fraction": float(np.count_nonzero(target) / target.size),
         "layers": V3_LAYERS,
+        "radar_conditioning": bool(radar_scans),
+        "radar_layers": ["radar_occupancy", "radar_density", "radar_abs_velocity"],
+        "radar_calibration_path": str(scene["calibration"]) if scene.get("calibration") else None,
         "x_range_m": list(x_range),
         "y_range_m": list(y_range),
         "resolution_m_per_cell": args.resolution,
