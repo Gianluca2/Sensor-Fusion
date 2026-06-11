@@ -327,20 +327,17 @@ def transform_scan_to_reference(points: np.ndarray, frame_timestamp: int, poses,
     return transform_xyz(points[:, :3], sensor_to_reference).astype(np.float32)
 
 
-def nearest_index_by_timestamp(timestamp: int, rows) -> int:
+def latest_index_at_or_before_timestamp(timestamp: int, rows) -> int | None:
     timestamps = [row["timestamp"] for row in rows]
-    insert_at = np.searchsorted(timestamps, timestamp)
-    best_index = max(0, min(insert_at, len(rows) - 1))
-    for index in (insert_at - 1, insert_at):
-        if 0 <= index < len(rows):
-            if abs(rows[index]["timestamp"] - timestamp) < abs(rows[best_index]["timestamp"] - timestamp):
-                best_index = index
-    return best_index
+    index = int(np.searchsorted(timestamps, timestamp, side="right") - 1)
+    if index < 0:
+        return None
+    return index
 
 
 def build_clean_faulty_and_radar_scan_lists(
     scene,
-    start_index: int,
+    reference_index: int,
     lidar_scan_count: int,
     radar_scan_count: int,
     fault_type: str,
@@ -349,7 +346,7 @@ def build_clean_faulty_and_radar_scan_lists(
 ):
     lidar_frames = scene["lidar_frames"]
     poses = scene["lidar_poses"]
-    reference = lidar_frames[start_index]
+    reference = lidar_frames[reference_index]
     reference_pose = nearest_by_timestamp(reference["timestamp"], poses)
     reference_to_world = pose_to_transform(reference_pose)
     world_to_reference = invert_transform(reference_to_world)
@@ -360,7 +357,10 @@ def build_clean_faulty_and_radar_scan_lists(
     frame_metadata = []
     radar_metadata = []
 
-    for frame in lidar_frames[start_index:start_index + lidar_scan_count]:
+    lidar_start_index = max(0, reference_index - lidar_scan_count + 1)
+    selected_lidar_frames = lidar_frames[lidar_start_index:reference_index + 1]
+
+    for frame in selected_lidar_frames:
         aeva_points = read_aeva_bin(frame["path"])
         faulted_points = apply_hercules_lidar_fault(
             aeva_points,
@@ -381,9 +381,12 @@ def build_clean_faulty_and_radar_scan_lists(
         })
 
     if scene.get("radar_frames") and radar_scan_count > 0:
-        nearest_radar_index = nearest_index_by_timestamp(reference["timestamp"], scene["radar_frames"])
-        radar_start_index = min(nearest_radar_index, max(0, len(scene["radar_frames"]) - radar_scan_count))
-        selected_radar_frames = scene["radar_frames"][radar_start_index:radar_start_index + radar_scan_count]
+        latest_radar_index = latest_index_at_or_before_timestamp(reference["timestamp"], scene["radar_frames"])
+        if latest_radar_index is None:
+            selected_radar_frames = []
+        else:
+            radar_start_index = max(0, latest_radar_index - radar_scan_count + 1)
+            selected_radar_frames = scene["radar_frames"][radar_start_index:latest_radar_index + 1]
 
         for radar_frame in selected_radar_frames:
             radar_points = read_continental_bin(radar_frame["path"])
@@ -424,7 +427,8 @@ def prepare_scenes(data_root: Path, lidar_aggregate_scans: int):
             continue
         scene["lidar_frames"] = lidar_frames
         scene["lidar_poses"] = load_poses(scene["aeva_gt"])
-        scene["max_start"] = len(lidar_frames) - lidar_aggregate_scans
+        scene["min_reference_index"] = lidar_aggregate_scans - 1
+        scene["max_reference_index"] = len(lidar_frames) - 1
         radar_dir = find_first_dir_named(scene["root"], "continental")
         radar_gt = find_first_file_named(scene["root"], "Continental_gt.txt")
         calibration = find_first_file_named(scene["root"], "Continental_LiDAR.txt")
@@ -452,12 +456,13 @@ def make_sample(index: int, scenes, args):
     severity = SEVERITIES[combo_index % len(SEVERITIES)]
     scene = scenes[index % len(scenes)]
     scene_cycle_index = index // len(scenes)
-    start_index = scene_cycle_index % (scene["max_start"] + 1)
+    valid_reference_count = scene["max_reference_index"] - scene["min_reference_index"] + 1
+    reference_index = scene["min_reference_index"] + (scene_cycle_index % valid_reference_count)
     rng = np.random.default_rng(args.seed + index)
 
     clean_scans, faulty_scans, radar_scans, radar_velocities, reference, frame_metadata, radar_metadata = build_clean_faulty_and_radar_scan_lists(
         scene,
-        start_index,
+        reference_index,
         args.lidar_aggregate_scans,
         args.radar_aggregate_scans,
         fault_type,

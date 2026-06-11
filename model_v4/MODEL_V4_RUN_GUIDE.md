@@ -76,7 +76,7 @@ V4 can aggregate different numbers of LiDAR and radar frames:
 --radar-aggregate-scans 20
 ```
 
-This means each training sample uses 3 motion-compensated Aeva LiDAR frames, but 20 motion-compensated Continental radar frames. If these flags are omitted, both default to `--aggregate-scans`.
+This means each training sample uses 3 motion-compensated Aeva LiDAR frames, but 20 motion-compensated Continental radar frames. The reference frame is the current frame `t`, and aggregation uses only past/current frames: LiDAR `[t-2, t-1, t]` and radar `[t-19, ..., t]`. If these flags are omitted, both default to `--aggregate-scans`.
 
 ## Linux 10k Test
 
