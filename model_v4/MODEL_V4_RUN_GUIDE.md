@@ -1,13 +1,13 @@
 # Model V4
 
-Model V4 keeps the 10-channel radar-conditioned Model V3 input, but changes the target and loss.
+Model V4 keeps the radar-conditioned Model V3-style input, but changes the target and loss.
 
 ## Goal
 
 Input:
 
 ```text
-faulty 10-channel LiDAR/radar BEV + known fault type + known severity
+faulty 11-channel LiDAR/radar BEV + known fault type + known severity
 ```
 
 Output:
@@ -38,7 +38,16 @@ temporal_density_consistency
 radar_occupancy
 radar_density
 radar_abs_velocity
+radar_supported_missing_lidar
 ```
+
+`radar_supported_missing_lidar` is a derived channel:
+
+```text
+radar_supported_missing_lidar = radar_occupancy * (1 - lidar_binary_occupancy)
+```
+
+It highlights cells where radar sees structure but LiDAR is missing occupancy, which gives the model a direct clue for sparse regions that may be LiDAR failures rather than naturally empty space.
 
 ## Loss
 

@@ -40,6 +40,7 @@ V3_LAYERS = [
     "radar_occupancy",
     "radar_density",
     "radar_abs_velocity",
+    "radar_supported_missing_lidar",
 ]
 
 
@@ -313,6 +314,14 @@ def stack_layers(bev_layers: dict) -> np.ndarray:
     return np.stack([bev_layers[layer].astype(np.float32) for layer in V3_LAYERS], axis=0)
 
 
+def add_radar_supported_missing_lidar(bev_layers: dict) -> None:
+    lidar_occupied = np.clip(bev_layers["binary_occupancy"], 0.0, 1.0)
+    radar_occupied = np.clip(bev_layers["radar_occupancy"], 0.0, 1.0)
+    bev_layers["radar_supported_missing_lidar"] = (
+        radar_occupied * (1.0 - lidar_occupied)
+    ).astype(np.float32)
+
+
 def damage_target(clean: np.ndarray, faulty: np.ndarray, threshold: float) -> tuple[np.ndarray, np.ndarray]:
     difference = np.max(np.abs(clean - faulty), axis=0)
     soft_target = np.clip(difference / max(threshold, 1e-6), 0.0, 1.0).astype(np.float32)
@@ -492,6 +501,8 @@ def make_sample(index: int, scenes, args):
     )
     clean_layers.update(radar_layers)
     faulty_layers.update(radar_layers)
+    add_radar_supported_missing_lidar(clean_layers)
+    add_radar_supported_missing_lidar(faulty_layers)
     clean = stack_layers(clean_layers)
     faulty = stack_layers(faulty_layers)
     target, binary_target = damage_target(clean, faulty, args.target_threshold)
@@ -515,7 +526,12 @@ def make_sample(index: int, scenes, args):
         "soft_target_mean": float(np.mean(target)),
         "layers": V3_LAYERS,
         "radar_conditioning": bool(radar_scans),
-        "radar_layers": ["radar_occupancy", "radar_density", "radar_abs_velocity"],
+        "radar_layers": [
+            "radar_occupancy",
+            "radar_density",
+            "radar_abs_velocity",
+            "radar_supported_missing_lidar",
+        ],
         "radar_calibration_path": str(scene["calibration"]) if scene.get("calibration") else None,
         "x_range_m": list(x_range),
         "y_range_m": list(y_range),
