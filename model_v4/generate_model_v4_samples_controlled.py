@@ -30,7 +30,14 @@ def main():
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--target-samples", type=int, default=75000)
     parser.add_argument("--chunk-size", type=int, default=250)
-    parser.add_argument("--aggregate-scans", type=int, default=3)
+    parser.add_argument(
+        "--aggregate-scans",
+        type=int,
+        default=3,
+        help="Backward-compatible default used for both LiDAR and radar aggregation unless overridden.",
+    )
+    parser.add_argument("--lidar-aggregate-scans", type=int, default=None)
+    parser.add_argument("--radar-aggregate-scans", type=int, default=None)
     parser.add_argument("--max-retries", type=int, default=3)
     parser.add_argument("--retry-sleep-seconds", type=float, default=5.0)
     parser.add_argument("--start-index", type=int, default=0)
@@ -45,12 +52,18 @@ def main():
     data_root = Path(args.data_root)
     dataset_dir = Path(args.dataset_dir)
     dataset_dir.mkdir(parents=True, exist_ok=True)
+    if args.lidar_aggregate_scans is None:
+        args.lidar_aggregate_scans = args.aggregate_scans
+    if args.radar_aggregate_scans is None:
+        args.radar_aggregate_scans = args.aggregate_scans
 
     print(f"Repository: {repo_dir}", flush=True)
     print(f"HeRCULES data: {data_root}", flush=True)
     print(f"Dataset dir: {dataset_dir}", flush=True)
     print(f"Target samples: {args.target_samples}", flush=True)
     print(f"Chunk size: {args.chunk_size}", flush=True)
+    print(f"LiDAR aggregate scans: {args.lidar_aggregate_scans}", flush=True)
+    print(f"Radar aggregate scans: {args.radar_aggregate_scans}", flush=True)
     print(f"Existing samples before start: {count_samples(dataset_dir)}", flush=True)
 
     for start_index in range(args.start_index, args.target_samples, args.chunk_size):
@@ -80,6 +93,10 @@ def main():
             str(start_index),
             "--aggregate-scans",
             str(args.aggregate_scans),
+            "--lidar-aggregate-scans",
+            str(args.lidar_aggregate_scans),
+            "--radar-aggregate-scans",
+            str(args.radar_aggregate_scans),
             "--keep-existing",
             "--skip-existing",
         ]

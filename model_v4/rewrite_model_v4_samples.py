@@ -185,6 +185,20 @@ def transform_radar_to_reference_lidar(
     return radar_xyz_reference, radar_points[:, 3].astype(np.float32)
 
 
+def transform_radar_to_reference_from_pose(
+    radar_points: np.ndarray,
+    radar_pose,
+    world_to_reference: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    if len(radar_points) == 0:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+
+    radar_to_world = pose_to_transform(radar_pose)
+    radar_to_reference = world_to_reference @ radar_to_world
+    radar_xyz_reference = transform_xyz(radar_points[:, :3], radar_to_reference).astype(np.float32)
+    return radar_xyz_reference, radar_points[:, 3].astype(np.float32)
+
+
 def project_radar_bev_v3(
     radar_xyz_list: list[np.ndarray],
     radar_velocity_list: list[np.ndarray],
@@ -313,7 +327,26 @@ def transform_scan_to_reference(points: np.ndarray, frame_timestamp: int, poses,
     return transform_xyz(points[:, :3], sensor_to_reference).astype(np.float32)
 
 
-def build_clean_faulty_and_radar_scan_lists(scene, start_index: int, scan_count: int, fault_type: str, severity: str, rng):
+def nearest_index_by_timestamp(timestamp: int, rows) -> int:
+    timestamps = [row["timestamp"] for row in rows]
+    insert_at = np.searchsorted(timestamps, timestamp)
+    best_index = max(0, min(insert_at, len(rows) - 1))
+    for index in (insert_at - 1, insert_at):
+        if 0 <= index < len(rows):
+            if abs(rows[index]["timestamp"] - timestamp) < abs(rows[best_index]["timestamp"] - timestamp):
+                best_index = index
+    return best_index
+
+
+def build_clean_faulty_and_radar_scan_lists(
+    scene,
+    start_index: int,
+    lidar_scan_count: int,
+    radar_scan_count: int,
+    fault_type: str,
+    severity: str,
+    rng,
+):
     lidar_frames = scene["lidar_frames"]
     poses = scene["lidar_poses"]
     reference = lidar_frames[start_index]
@@ -325,8 +358,9 @@ def build_clean_faulty_and_radar_scan_lists(scene, start_index: int, scan_count:
     radar_scans = []
     radar_velocities = []
     frame_metadata = []
+    radar_metadata = []
 
-    for frame in lidar_frames[start_index:start_index + scan_count]:
+    for frame in lidar_frames[start_index:start_index + lidar_scan_count]:
         aeva_points = read_aeva_bin(frame["path"])
         faulted_points = apply_hercules_lidar_fault(
             aeva_points,
@@ -340,44 +374,57 @@ def build_clean_faulty_and_radar_scan_lists(scene, start_index: int, scan_count:
         faulty_scans.append(
             transform_scan_to_reference(faulted_points, frame["timestamp"], poses, world_to_reference)
         )
-        radar_metadata = None
-        if scene.get("radar_frames") and scene.get("radar_to_lidar") is not None:
-            radar_frame = nearest_by_timestamp(frame["timestamp"], scene["radar_frames"])
-            lidar_pose = nearest_by_timestamp(frame["timestamp"], poses)
-            radar_points = read_continental_bin(radar_frame["path"])
-            radar_xyz, radar_velocity = transform_radar_to_reference_lidar(
-                radar_points,
-                scene["radar_to_lidar"],
-                lidar_pose,
-                world_to_reference,
-            )
-            radar_scans.append(radar_xyz)
-            radar_velocities.append(radar_velocity)
-            radar_metadata = {
-                "timestamp": radar_frame["timestamp"],
-                "path": str(radar_frame["path"]),
-                "delta_ms_from_lidar": (radar_frame["timestamp"] - frame["timestamp"]) / 1_000_000.0,
-            }
-
         frame_metadata.append({
             "timestamp": frame["timestamp"],
             "path": str(frame["path"]),
             "delta_ms_from_reference": (frame["timestamp"] - reference["timestamp"]) / 1_000_000.0,
-            "matched_radar": radar_metadata,
         })
 
-    return clean_scans, faulty_scans, radar_scans, radar_velocities, reference, frame_metadata
+    if scene.get("radar_frames") and radar_scan_count > 0:
+        nearest_radar_index = nearest_index_by_timestamp(reference["timestamp"], scene["radar_frames"])
+        radar_start_index = min(nearest_radar_index, max(0, len(scene["radar_frames"]) - radar_scan_count))
+        selected_radar_frames = scene["radar_frames"][radar_start_index:radar_start_index + radar_scan_count]
+
+        for radar_frame in selected_radar_frames:
+            radar_points = read_continental_bin(radar_frame["path"])
+            if scene.get("radar_poses"):
+                radar_pose = nearest_by_timestamp(radar_frame["timestamp"], scene["radar_poses"])
+                radar_xyz, radar_velocity = transform_radar_to_reference_from_pose(
+                    radar_points,
+                    radar_pose,
+                    world_to_reference,
+                )
+            elif scene.get("radar_to_lidar") is not None:
+                lidar_pose = nearest_by_timestamp(radar_frame["timestamp"], poses)
+                radar_xyz, radar_velocity = transform_radar_to_reference_lidar(
+                    radar_points,
+                    scene["radar_to_lidar"],
+                    lidar_pose,
+                    world_to_reference,
+                )
+            else:
+                continue
+
+            radar_scans.append(radar_xyz)
+            radar_velocities.append(radar_velocity)
+            radar_metadata.append({
+                "timestamp": radar_frame["timestamp"],
+                "path": str(radar_frame["path"]),
+                "delta_ms_from_reference_lidar": (radar_frame["timestamp"] - reference["timestamp"]) / 1_000_000.0,
+            })
+
+    return clean_scans, faulty_scans, radar_scans, radar_velocities, reference, frame_metadata, radar_metadata
 
 
-def prepare_scenes(data_root: Path, aggregate_scans: int):
+def prepare_scenes(data_root: Path, lidar_aggregate_scans: int):
     scenes = []
     for scene in discover_scene_roots(data_root):
         lidar_frames = load_frames(scene["aeva_dir"])
-        if len(lidar_frames) < aggregate_scans:
+        if len(lidar_frames) < lidar_aggregate_scans:
             continue
         scene["lidar_frames"] = lidar_frames
         scene["lidar_poses"] = load_poses(scene["aeva_gt"])
-        scene["max_start"] = len(lidar_frames) - aggregate_scans
+        scene["max_start"] = len(lidar_frames) - lidar_aggregate_scans
         radar_dir = find_first_dir_named(scene["root"], "continental")
         radar_gt = find_first_file_named(scene["root"], "Continental_gt.txt")
         calibration = find_first_file_named(scene["root"], "Continental_LiDAR.txt")
@@ -408,10 +455,11 @@ def make_sample(index: int, scenes, args):
     start_index = scene_cycle_index % (scene["max_start"] + 1)
     rng = np.random.default_rng(args.seed + index)
 
-    clean_scans, faulty_scans, radar_scans, radar_velocities, reference, frame_metadata = build_clean_faulty_and_radar_scan_lists(
+    clean_scans, faulty_scans, radar_scans, radar_velocities, reference, frame_metadata, radar_metadata = build_clean_faulty_and_radar_scan_lists(
         scene,
         start_index,
-        args.aggregate_scans,
+        args.lidar_aggregate_scans,
+        args.radar_aggregate_scans,
         fault_type,
         severity,
         rng,
@@ -451,6 +499,7 @@ def make_sample(index: int, scenes, args):
         "reference_lidar_timestamp": reference["timestamp"],
         "reference_lidar_path": str(reference["path"]),
         "aggregated_lidar_frames": frame_metadata,
+        "aggregated_radar_frames": radar_metadata,
         "fault_source": "hercules_lidar_before_bev_projection",
         "fault_type": fault_type,
         "fault_severity": severity,
@@ -467,6 +516,8 @@ def make_sample(index: int, scenes, args):
         "y_range_m": list(y_range),
         "resolution_m_per_cell": args.resolution,
         "aggregate_scans": args.aggregate_scans,
+        "lidar_aggregate_scans": args.lidar_aggregate_scans,
+        "radar_aggregate_scans": args.radar_aggregate_scans,
     }
     return faulty, clean, target, binary_target, metadata
 
@@ -507,7 +558,24 @@ def main():
         default=0,
         help="First global sample index to write. Useful for chunked/resumable generation.",
     )
-    parser.add_argument("--aggregate-scans", type=int, default=3)
+    parser.add_argument(
+        "--aggregate-scans",
+        type=int,
+        default=3,
+        help="Backward-compatible default used for both LiDAR and radar aggregation unless overridden.",
+    )
+    parser.add_argument(
+        "--lidar-aggregate-scans",
+        type=int,
+        default=None,
+        help="Number of consecutive Aeva LiDAR frames to aggregate per sample.",
+    )
+    parser.add_argument(
+        "--radar-aggregate-scans",
+        type=int,
+        default=None,
+        help="Number of consecutive Continental radar frames to aggregate per sample.",
+    )
     parser.add_argument("--x-min", type=float, default=0.0)
     parser.add_argument("--x-max", type=float, default=80.0)
     parser.add_argument("--y-min", type=float, default=-40.0)
@@ -530,6 +598,10 @@ def main():
 
     random.seed(args.seed)
     np.random.seed(args.seed)
+    if args.lidar_aggregate_scans is None:
+        args.lidar_aggregate_scans = args.aggregate_scans
+    if args.radar_aggregate_scans is None:
+        args.radar_aggregate_scans = args.aggregate_scans
     output_dir = Path(args.dataset_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     if not args.keep_existing:
@@ -540,13 +612,15 @@ def main():
         if removed:
             print(f"Removed {removed} stale samples from {output_dir}")
 
-    scenes = prepare_scenes(Path(args.data_root), args.aggregate_scans)
+    scenes = prepare_scenes(Path(args.data_root), args.lidar_aggregate_scans)
     print("Discovered scenes:")
     for scene in scenes:
         print(f"  {scene['name']}: {len(scene['lidar_frames'])} LiDAR frames")
     print(f"V4 layers: {', '.join(V3_LAYERS)}")
     print("Fault injection: raw Aeva point cloud -> fault injector -> motion compensation -> BEV")
     print("Target: soft clean-vs-faulty BEV damage map plus binary target for metrics")
+    print(f"LiDAR aggregate scans per sample: {args.lidar_aggregate_scans}")
+    print(f"Radar aggregate scans per sample: {args.radar_aggregate_scans}")
 
     manifest = {
         "model_version": "v4",
@@ -556,6 +630,8 @@ def main():
         "start_index": args.start_index,
         "end_index_exclusive": args.start_index + args.num_samples,
         "aggregate_scans": args.aggregate_scans,
+        "lidar_aggregate_scans": args.lidar_aggregate_scans,
+        "radar_aggregate_scans": args.radar_aggregate_scans,
         "layers": V3_LAYERS,
         "fault_types": FAULT_TYPES,
         "severities": SEVERITIES,

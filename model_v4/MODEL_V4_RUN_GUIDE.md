@@ -67,6 +67,17 @@ spatial_weight = 1 + range_loss_weight * range_from_sensor
 
 V4 uses GroupNorm instead of BatchNorm. This is more stable for small or changing batch sizes.
 
+## Separate LiDAR And Radar Aggregation
+
+V4 can aggregate different numbers of LiDAR and radar frames:
+
+```bash
+--lidar-aggregate-scans 3
+--radar-aggregate-scans 20
+```
+
+This means each training sample uses 3 motion-compensated Aeva LiDAR frames, but 20 motion-compensated Continental radar frames. If these flags are omitted, both default to `--aggregate-scans`.
+
 ## Linux 10k Test
 
 ```bash
@@ -82,7 +93,8 @@ python model_v4/generate_model_v4_samples_controlled.py \
   --dataset-dir "$OUT/dataset" \
   --target-samples 10000 \
   --chunk-size 500 \
-  --aggregate-scans 3
+  --lidar-aggregate-scans 3 \
+  --radar-aggregate-scans 20
 
 python model_v4/train_model_v4.py \
   --dataset-dir "$OUT/dataset" \
