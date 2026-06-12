@@ -7,7 +7,7 @@ Model V4 keeps the radar-conditioned Model V3-style input, but changes the targe
 Input:
 
 ```text
-faulty 13-channel LiDAR/radar BEV + known fault type + known severity
+faulty 14-channel LiDAR/radar BEV + known fault type + known severity
 ```
 
 Output:
@@ -41,6 +41,7 @@ radar_occupancy
 radar_density
 radar_abs_velocity
 radar_supported_missing_lidar
+radar_expected_lidar_density_residual
 ```
 
 `radar_supported_missing_lidar` is a derived channel:
@@ -50,6 +51,14 @@ radar_supported_missing_lidar = radar_occupancy * (1 - lidar_binary_occupancy)
 ```
 
 It highlights cells where radar sees structure but LiDAR is missing occupancy, which gives the model a direct clue for sparse regions that may be LiDAR failures rather than naturally empty space.
+
+`radar_expected_lidar_density_residual` is a soft radar-vs-LiDAR density disagreement channel:
+
+```text
+radar_expected_lidar_density_residual = max(radar_density - lidar_density, 0)
+```
+
+It highlights cells where radar density is stronger than LiDAR density, even when LiDAR is not completely empty.
 
 `expected_lidar_density_by_range_angle` is a heuristic LiDAR prior computed from range-angle bins in the current BEV. It gives the model context for what density is locally expected at similar geometry.
 
