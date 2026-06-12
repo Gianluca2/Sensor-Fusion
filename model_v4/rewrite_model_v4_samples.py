@@ -35,6 +35,8 @@ V3_LAYERS = [
     "lidar_height_spread",
     "binary_occupancy",
     "range_from_sensor",
+    "expected_lidar_density_by_range_angle",
+    "lidar_density_expected_residual",
     "local_density_residual",
     "temporal_density_consistency",
     "radar_occupancy",
@@ -105,6 +107,52 @@ def make_range_channel(height: int, width: int, x_range, y_range, resolution: fl
     max_range = max(float(np.max(metric_range)), 1e-6)
     range_from_sensor = metric_range / max_range
     return range_from_sensor.astype(np.float32)
+
+
+def make_range_angle_channels(height: int, width: int, x_range, y_range, resolution: float):
+    x_min, x_max = x_range
+    y_min, y_max = y_range
+    row_indices = np.arange(height, dtype=np.float32)
+    col_indices = np.arange(width, dtype=np.float32)
+    x_centers = x_min + (height - 1 - row_indices + 0.5) * resolution
+    y_centers = y_min + (col_indices + 0.5) * resolution
+    x_grid, y_grid = np.meshgrid(x_centers, y_centers, indexing="ij")
+    metric_range = np.sqrt(x_grid * x_grid + y_grid * y_grid).astype(np.float32)
+    angle = np.arctan2(y_grid, np.maximum(x_grid, 1e-6)).astype(np.float32)
+    return metric_range, angle
+
+
+def expected_density_by_range_angle(
+    density: np.ndarray,
+    x_range,
+    y_range,
+    resolution: float,
+    range_bin_size_m: float = 5.0,
+    angle_bin_size_deg: float = 6.0,
+) -> np.ndarray:
+    height, width = density.shape
+    metric_range, angle = make_range_angle_channels(height, width, x_range, y_range, resolution)
+    range_bins = np.floor(metric_range / range_bin_size_m).astype(np.int32)
+    angle_bin_size = np.deg2rad(angle_bin_size_deg)
+    angle_bins = np.floor((angle + (np.pi / 2.0)) / angle_bin_size).astype(np.int32)
+    range_bin_count = int(np.max(range_bins)) + 1
+    angle_bin_count = int(np.max(angle_bins)) + 1
+
+    expected = np.zeros_like(density, dtype=np.float32)
+    global_expected = float(np.mean(density))
+    for range_index in range(range_bin_count):
+        for angle_index in range(angle_bin_count):
+            mask = (range_bins == range_index) & (angle_bins == angle_index)
+            if not np.any(mask):
+                continue
+            values = density[mask]
+            nonzero = values[values > 0.0]
+            if len(nonzero) > 0:
+                expected[mask] = float(np.mean(nonzero))
+            else:
+                expected[mask] = global_expected
+
+    return np.clip(expected, 0.0, 1.0).astype(np.float32)
 
 
 def occupancy_grid(xyz: np.ndarray, x_range, y_range, resolution: float):
@@ -281,6 +329,15 @@ def project_lidar_bev_v3(
     height_spread = normalize_by_max(height_spread)
     binary_occupancy = occupied.astype(np.float32)
     local_density_residual = normalize_by_max(np.abs(density_normalized - local_mean_3x3(density_normalized)))
+    expected_lidar_density = expected_density_by_range_angle(
+        density_normalized,
+        x_range,
+        y_range,
+        resolution,
+    )
+    lidar_density_expected_residual = normalize_by_max(
+        np.maximum(expected_lidar_density - density_normalized, 0.0)
+    )
     range_from_sensor = make_range_channel(
         height,
         width,
@@ -305,6 +362,8 @@ def project_lidar_bev_v3(
         "lidar_height_spread": height_spread,
         "binary_occupancy": binary_occupancy,
         "range_from_sensor": range_from_sensor,
+        "expected_lidar_density_by_range_angle": expected_lidar_density,
+        "lidar_density_expected_residual": lidar_density_expected_residual,
         "local_density_residual": local_density_residual,
         "temporal_density_consistency": temporal_density_consistency,
     }

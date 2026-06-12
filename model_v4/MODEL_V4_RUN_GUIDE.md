@@ -7,7 +7,7 @@ Model V4 keeps the radar-conditioned Model V3-style input, but changes the targe
 Input:
 
 ```text
-faulty 11-channel LiDAR/radar BEV + known fault type + known severity
+faulty 13-channel LiDAR/radar BEV + known fault type + known severity
 ```
 
 Output:
@@ -33,6 +33,8 @@ lidar_height
 lidar_height_spread
 binary_occupancy
 range_from_sensor
+expected_lidar_density_by_range_angle
+lidar_density_expected_residual
 local_density_residual
 temporal_density_consistency
 radar_occupancy
@@ -49,6 +51,16 @@ radar_supported_missing_lidar = radar_occupancy * (1 - lidar_binary_occupancy)
 
 It highlights cells where radar sees structure but LiDAR is missing occupancy, which gives the model a direct clue for sparse regions that may be LiDAR failures rather than naturally empty space.
 
+`expected_lidar_density_by_range_angle` is a heuristic LiDAR prior computed from range-angle bins in the current BEV. It gives the model context for what density is locally expected at similar geometry.
+
+`lidar_density_expected_residual` highlights cells where the observed LiDAR density is lower than the expected range-angle density:
+
+```text
+lidar_density_expected_residual = max(expected_lidar_density_by_range_angle - lidar_density, 0)
+```
+
+This is intended to help distinguish normal sparse range behavior from suspicious missing LiDAR support.
+
 ## Loss
 
 ```text
@@ -62,8 +74,8 @@ The default weights are:
 ```text
 soft_weight = 1.0
 bce_weight = 0.5
-dice_weight = 0.5
-range_loss_weight = 1.0
+dice_weight = 1.0
+range_loss_weight = 0.25
 ```
 
 The range loss weight applies:
@@ -119,7 +131,7 @@ python model_v4/train_model_v4.py \
   --soft-weight 1.0 \
   --bce-weight 0.5 \
   --dice-weight 0.5 \
-  --range-loss-weight 1.0 \
+  --range-loss-weight 0.25 \
   --range-channel-index 4 \
   --base-channels 48 \
   --early-stop-patience 50

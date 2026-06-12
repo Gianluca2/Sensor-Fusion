@@ -388,7 +388,7 @@ def main():
     parser.add_argument(
         "--range-loss-weight",
         type=float,
-        default=1.0,
+        default=0.25,
         help="Extra spatial loss weight applied by normalized range: 1 + weight * range_channel.",
     )
     parser.add_argument(
